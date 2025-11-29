@@ -2,13 +2,14 @@ import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
 import { PlayerController } from './player.js';
 import { CollisionSystem } from './collision.js';
-import { createIndianGround } from './ground.js';
-import { createIndianSkybox } from './skybox.js';
+import { createIndianGround, updateGroundTheme } from './ground.js';
+import { createIndianSkybox, updateSkyboxTheme } from './skybox.js';
 // import { createIndianStructures } from './structures.js'; // Likely redundant
 import { IndianArchitecturalElements } from './indianArchitecture.js';
 import { WeaponSystem } from './weapons.js';
 import { EnemySystem } from './enemies.js';
 import { HealthSystem } from './health.js';
+import { LevelManager } from './levelManager.js';
 
 // --- Basic Setup ---
 const scene = new THREE.Scene();
@@ -96,6 +97,22 @@ if (skybox) {
     console.warn("Failed to create skybox."); // Warn instead of error if optional
 }
 
+// --- Level Theme Change Listener ---
+window.addEventListener('levelThemeChange', (event) => {
+    const config = event.detail;
+    console.log(`Changing theme to: ${config.theme}`);
+    
+    // Update ground theme
+    if (ground) {
+        updateGroundTheme(ground, config.theme);
+    }
+    
+    // Update skybox theme
+    if (skybox) {
+        updateSkyboxTheme(skybox, config.theme);
+    }
+});
+
 // --- Create Indian Architecture ---
 const indianArch = new IndianArchitecturalElements();
 const indianBuildingsGroup = indianArch.createSampleLayout();
@@ -143,6 +160,7 @@ let playerController;
 let weaponSystem;
 let enemySystem;
 let healthSystem;
+let levelManager;
 
 // --- Initialization ---
 function initGame() {
@@ -225,6 +243,24 @@ function initGame() {
         enemySystem.weaponSystem = weaponSystem; // Assign reference if needed
     }
 
+    // Level Manager
+    if (!levelManager) {
+        console.log("Creating LevelManager...");
+        levelManager = new LevelManager(scene, enemySystem, playerController, weaponSystem);
+        // Link level manager to enemy system
+        enemySystem.levelManager = levelManager;
+        // Set audio context for level manager
+        if (weaponSystem.audioContext) {
+            levelManager.setAudioContext(weaponSystem.audioContext);
+        }
+        console.log("LevelManager created.");
+    } else {
+        console.log("Resetting existing LevelManager...");
+        levelManager.reset();
+    }
+
+    // Start Level 1
+    levelManager.startLevel(1);
 
     // Initial UI State
     if(loadingScreen) loadingScreen.style.display = 'none';
@@ -256,6 +292,12 @@ function resetGame() {
     // --- FIX: Call the existing reset() method ---
     if (weaponSystem) weaponSystem.reset();
     if (enemySystem) enemySystem.reset();
+    
+    // Reset and restart level manager
+    if (levelManager) {
+        levelManager.reset();
+        levelManager.startLevel(1);
+    }
 
     // Update UI immediately (reset methods should handle their own UI updates)
     // updateUI(); // Might be redundant if reset methods update UI
@@ -383,6 +425,9 @@ function animate(currentTime) {
         }
         if (enemySystem) {
             enemySystem.update(clampedDelta);
+        }
+        if (levelManager) {
+            levelManager.update(clampedDelta);
         }
 
         // Update general UI (like score)

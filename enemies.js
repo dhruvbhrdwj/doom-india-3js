@@ -62,6 +62,25 @@ export class EnemySystem {
       }
     ];
 
+    // Boss enemy type (not in regular spawn pool)
+    this.bossType = {
+      name: 'GiantDemon',
+      health: 500,
+      damage: 50,
+      speed: 1.5,
+      attackRange: 8,
+      attackRate: 0.4, // Slower but devastating
+      model: null, // Created on demand
+      animationUpdate: this.updateBossAnimation,
+      height: 6.0,
+      isBoss: true
+    };
+
+    // Boss state
+    this.boss = null;
+    this.bossActive = false;
+    this.levelManager = null; // Set by level manager
+
     // Pathfinding grid (Still basic)
     this.gridSize = 2; // Size of each grid cell
     this.grid = []; // Currently unused due to simplified pathfinding
@@ -341,6 +360,348 @@ export class EnemySystem {
     return enemy;
   }
 
+  // Create Giant Demon Boss Model (3x scale, menacing appearance)
+  createGiantDemonModel() {
+    const boss = new THREE.Group();
+    const scale = 3.0; // 3x normal size
+
+    // Massive body
+    const bodyGeometry = new THREE.CylinderGeometry(1.5 * scale, 1.0 * scale, 4.0 * scale, 12);
+    const bodyMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0x4A0000, // Dark blood red
+      roughness: 0.6, 
+      metalness: 0.4 
+    });
+    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+    body.position.y = 2.0 * scale;
+    body.userData.isEnemyPart = true;
+    boss.add(body);
+
+    // Massive head
+    const headGeometry = new THREE.SphereGeometry(1.0 * scale, 12, 12);
+    const headMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0x660000, 
+      roughness: 0.5, 
+      metalness: 0.3 
+    });
+    const head = new THREE.Mesh(headGeometry, headMaterial);
+    head.position.y = 4.5 * scale;
+    head.userData.isEnemyPart = true;
+    boss.add(head);
+
+    // Giant horns
+    const hornGeometry = new THREE.ConeGeometry(0.3 * scale, 1.5 * scale, 8);
+    const hornMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0x1A1A1A, 
+      roughness: 0.3, 
+      metalness: 0.7 
+    });
+    
+    const leftHorn = new THREE.Mesh(hornGeometry, hornMaterial);
+    leftHorn.position.set(-0.7 * scale, 5.2 * scale, 0);
+    leftHorn.rotation.z = -Math.PI / 5;
+    leftHorn.userData.isEnemyPart = true;
+    boss.add(leftHorn);
+    
+    const rightHorn = new THREE.Mesh(hornGeometry, hornMaterial);
+    rightHorn.position.set(0.7 * scale, 5.2 * scale, 0);
+    rightHorn.rotation.z = Math.PI / 5;
+    rightHorn.userData.isEnemyPart = true;
+    boss.add(rightHorn);
+
+    // Massive arms
+    const armGeometry = new THREE.CylinderGeometry(0.4 * scale, 0.5 * scale, 2.5 * scale, 8);
+    const armMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0x4A0000, 
+      roughness: 0.6, 
+      metalness: 0.4 
+    });
+    
+    const leftArm = new THREE.Mesh(armGeometry, armMaterial);
+    leftArm.position.set(-1.8 * scale, 2.5 * scale, 0);
+    leftArm.rotation.z = Math.PI / 4;
+    leftArm.userData.isEnemyPart = true;
+    boss.add(leftArm);
+    
+    const rightArm = new THREE.Mesh(armGeometry, armMaterial);
+    rightArm.position.set(1.8 * scale, 2.5 * scale, 0);
+    rightArm.rotation.z = -Math.PI / 4;
+    rightArm.userData.isEnemyPart = true;
+    boss.add(rightArm);
+
+    // Thick legs
+    const legGeometry = new THREE.CylinderGeometry(0.5 * scale, 0.6 * scale, 2.0 * scale, 8);
+    const legMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0x4A0000, 
+      roughness: 0.6, 
+      metalness: 0.4 
+    });
+    
+    const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
+    leftLeg.position.set(-0.8 * scale, 1.0 * scale, 0);
+    leftLeg.userData.isEnemyPart = true;
+    boss.add(leftLeg);
+    
+    const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
+    rightLeg.position.set(0.8 * scale, 1.0 * scale, 0);
+    rightLeg.userData.isEnemyPart = true;
+    boss.add(rightLeg);
+
+    // Glowing eyes
+    const eyeGeometry = new THREE.SphereGeometry(0.2 * scale, 8, 8);
+    const eyeMaterial = new THREE.MeshBasicMaterial({ 
+      color: 0xFF0000,
+      emissive: 0xFF0000,
+      emissiveIntensity: 2
+    });
+    
+    const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+    leftEye.position.set(-0.4 * scale, 4.6 * scale, 0.8 * scale);
+    leftEye.userData.isEnemyPart = true;
+    boss.add(leftEye);
+    
+    const rightEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+    rightEye.position.set(0.4 * scale, 4.6 * scale, 0.8 * scale);
+    rightEye.userData.isEnemyPart = true;
+    boss.add(rightEye);
+
+    // Add glowing aura effect
+    const auraGeometry = new THREE.SphereGeometry(2.5 * scale, 16, 16);
+    const auraMaterial = new THREE.MeshBasicMaterial({
+      color: 0xFF0000,
+      transparent: true,
+      opacity: 0.1,
+      side: THREE.BackSide
+    });
+    const aura = new THREE.Mesh(auraGeometry, auraMaterial);
+    aura.position.y = 2.5 * scale;
+    boss.add(aura);
+
+    // Store original materials for hit flash
+    boss.userData.originalMaterials = new Map();
+    boss.traverse((child) => {
+      if (child.isMesh && child.material) {
+        boss.userData.originalMaterials.set(child, child.material);
+      }
+    });
+
+    boss.userData.animationState = { 
+      walkTime: 0, 
+      attackTime: 0, 
+      isAttacking: false,
+      chargeTime: 0,
+      isCharging: false,
+      slamTime: 0,
+      isSlaming: false
+    };
+    boss.castShadow = true;
+    boss.receiveShadow = true;
+    boss.children.forEach(child => {
+      child.castShadow = true;
+    });
+
+    return boss;
+  }
+
+  // Spawn the boss enemy
+  spawnBoss() {
+    if (this.bossActive) return;
+
+    console.log("Spawning Giant Demon Boss!");
+
+    // Create boss model
+    const bossModel = this.createGiantDemonModel();
+
+    // Create boss enemy object
+    const boss = {
+      id: THREE.MathUtils.generateUUID(),
+      type: 'GiantDemon',
+      health: this.bossType.health,
+      maxHealth: this.bossType.health,
+      damage: this.bossType.damage,
+      speed: this.bossType.speed,
+      attackRange: this.bossType.attackRange,
+      attackRate: this.bossType.attackRate,
+      lastAttackTime: 0,
+      model: bossModel,
+      position: new THREE.Vector3(0, 0, -60), // Spawn in center-back
+      target: this.player.getPosition().clone(),
+      path: [],
+      currentPathIndex: 0,
+      state: 'idle',
+      lastStateChange: performance.now() / 1000,
+      height: this.bossType.height,
+      animationUpdate: this.bossType.animationUpdate,
+      hitFlashTimeout: null,
+      enemySystem: this,
+      isBoss: true,
+
+      // Boss-specific attack methods
+      groundSlam: false,
+      chargeAttack: false,
+      lastSpecialAttack: 0,
+      specialAttackCooldown: 5, // Seconds between special attacks
+
+      takeDamage: function(amount) {
+        if (this.state === 'dying') return;
+
+        this.health -= amount;
+        console.log(`BOSS took ${amount} damage! ${this.health.toFixed(0)}/${this.maxHealth.toFixed(0)} remaining`);
+
+        // Hit flash effect
+        if (this.hitFlashTimeout) clearTimeout(this.hitFlashTimeout);
+        const hitMaterial = new THREE.MeshStandardMaterial({
+          color: 0xFFFFFF,
+          emissive: 0xFFFFFF,
+          emissiveIntensity: 0.8,
+          roughness: 1.0,
+          metalness: 0.0,
+          transparent: true,
+          opacity: 0.8
+        });
+
+        this.model.traverse((child) => {
+          if (child.isMesh && child.material) {
+            child.material = hitMaterial;
+          }
+        });
+
+        this.hitFlashTimeout = setTimeout(() => {
+          this.model.traverse((child) => {
+            if (child.isMesh && this.model.userData.originalMaterials) {
+              const originalMaterial = this.model.userData.originalMaterials.get(child);
+              if (originalMaterial) {
+                child.material = originalMaterial;
+              }
+            }
+          });
+          this.hitFlashTimeout = null;
+        }, 100);
+
+        if (this.health <= 0) {
+          this.enemySystem.handleBossDeath(this);
+        }
+      }
+    };
+
+    // Link model to boss object
+    boss.model.userData.enemyObject = boss;
+    boss.model.name = 'GiantDemon_BOSS';
+
+    // Rebuild originalMaterials Map after any cloning
+    boss.model.userData.originalMaterials = new Map();
+    boss.model.traverse((child) => {
+      if (child.isMesh && child.material) {
+        boss.model.userData.originalMaterials.set(child, child.material);
+      }
+    });
+
+    // Set model position
+    boss.model.position.copy(boss.position);
+    boss.model.position.y = 0;
+
+    // Add to scene
+    this.scene.add(boss.model);
+
+    // Add to enemies array
+    this.enemies.push(boss);
+    this.boss = boss;
+    this.bossActive = true;
+
+    console.log("Boss spawned at", boss.position);
+  }
+
+  // Handle boss death
+  handleBossDeath(boss) {
+    if (boss.state === 'dying') return;
+
+    console.log("BOSS DEFEATED!");
+    boss.state = 'dying';
+
+    // Play boss death sound
+    if (this.weaponSystem && this.weaponSystem.playEnemyDeathSound) {
+      // Play multiple death sounds for dramatic effect
+      this.weaponSystem.playEnemyDeathSound();
+      setTimeout(() => this.weaponSystem.playEnemyDeathSound(), 200);
+      setTimeout(() => this.weaponSystem.playEnemyDeathSound(), 400);
+    }
+
+    // Dramatic death animation
+    const deathDuration = 2.0;
+    const startTime = performance.now();
+    const initialScale = boss.model.scale.clone();
+
+    const fadeInterval = setInterval(() => {
+      const elapsed = (performance.now() - startTime) / 1000;
+      if (elapsed >= deathDuration) {
+        clearInterval(fadeInterval);
+        if (this.scene.getObjectById(boss.model.id)) {
+          this.scene.remove(boss.model);
+          boss.model.traverse(child => {
+            if (child.isMesh) {
+              if (child.geometry) child.geometry.dispose();
+              if (child.material) {
+                if (Array.isArray(child.material)) {
+                  child.material.forEach(mat => mat.dispose());
+                } else {
+                  child.material.dispose();
+                }
+              }
+            }
+          });
+        }
+      } else {
+        const progress = elapsed / deathDuration;
+        // Shrink and spin
+        boss.model.scale.copy(initialScale).multiplyScalar(1 - progress);
+        boss.model.rotation.y += 0.1;
+        boss.model.position.y = progress * 2; // Rise up slightly
+      }
+    }, 30);
+
+    // Remove from enemies array
+    this.enemies = this.enemies.filter(e => e.id !== boss.id);
+    this.boss = null;
+    this.bossActive = false;
+
+    // Notify level manager
+    if (this.levelManager && this.levelManager.onBossDefeated) {
+      setTimeout(() => {
+        this.levelManager.onBossDefeated();
+      }, 500);
+    }
+
+    // Update score
+    window.updateGameScore(100); // Boss worth more points
+  }
+
+  // Boss animation update
+  updateBossAnimation(enemy, deltaTime) {
+    const state = enemy.model.userData.animationState;
+    const body = enemy.model.children[0];
+    const leftArm = enemy.model.children[4];
+    const rightArm = enemy.model.children[5];
+
+    if (enemy.state === 'dying' || state.isAttacking) return;
+
+    if (enemy.state === 'chasing') {
+      state.walkTime += deltaTime * enemy.speed * 0.8;
+      // Heavy stomping motion
+      body.position.y = 6 + Math.abs(Math.sin(state.walkTime)) * 0.5;
+      if (leftArm) leftArm.rotation.x = Math.sin(state.walkTime) * 0.3;
+      if (rightArm) rightArm.rotation.x = -Math.sin(state.walkTime) * 0.3;
+    } else if (enemy.state === 'attacking') {
+      state.attackTime += deltaTime * 2;
+      // Menacing arm raise
+      if (leftArm) leftArm.rotation.z = Math.PI / 4 + Math.sin(state.attackTime) * 0.3;
+      if (rightArm) rightArm.rotation.z = -Math.PI / 4 - Math.sin(state.attackTime) * 0.3;
+    } else {
+      // Idle breathing
+      body.position.y = 6 + Math.sin(state.walkTime * 0.5) * 0.2;
+      state.walkTime += deltaTime;
+    }
+  }
+
   // --- Setup and Pathfinding (Basic) ---
 
   setupSpawnPoints() {
@@ -479,6 +840,14 @@ export class EnemySystem {
     // Add a name for easier debugging in scene graph
     enemy.model.name = `${enemy.type}_${enemy.id.substring(0,4)}`;
 
+    // Rebuild originalMaterials Map after cloning (Maps don't clone properly)
+    enemy.model.userData.originalMaterials = new Map();
+    enemy.model.traverse((child) => {
+        if (child.isMesh && child.material) {
+            enemy.model.userData.originalMaterials.set(child, child.material);
+        }
+    });
+
     // Set model initial position and add to scene
     enemy.model.position.copy(enemy.position);
     // Adjust Y position based on enemy height so feet are near y=0
@@ -503,6 +872,11 @@ export class EnemySystem {
       enemy.state = 'dying';
       this.killCount++;
       window.updateGameScore(10); // Example: Update score via global function
+
+      // Play enemy death sound
+      if (this.weaponSystem && this.weaponSystem.playEnemyDeathSound) {
+          this.weaponSystem.playEnemyDeathSound();
+      }
 
       // Optional: Add death animation/effect trigger here
       // e.g., enemy.model.playAnimation('death');
@@ -556,7 +930,7 @@ export class EnemySystem {
     if (currentTime - enemy.lastAttackTime > (1 / enemy.attackRate)) {
       console.log(`${enemy.type} ${enemy.id.substring(0,4)} attacks player!`);
       // Use the HealthSystem to damage the player
-      this.healthSystem.playerTakeDamage(enemy.damage); // Method name confirmed from previous context
+      this.healthSystem.takeDamage(enemy.damage); // Correct method name from health.js
       enemy.lastAttackTime = currentTime;
       enemy.model.userData.animationState.isAttacking = true; // Trigger attack animation state
       enemy.model.userData.animationState.attackTime = 0; // Reset attack animation timer
@@ -864,5 +1238,38 @@ export class EnemySystem {
   // onResize() {
   //     console.log("EnemySystem received resize event.");
   // }
+
+  // --- Clear All Enemies Method (called when quitting to menu) ---
+  clearAllEnemies() {
+      console.log("Clearing all enemies...");
+
+      // Remove all existing enemy models from the scene and dispose resources
+      this.enemies.forEach(enemy => {
+          if (enemy.model && this.scene.getObjectById(enemy.model.id)) {
+              this.scene.remove(enemy.model);
+              // Dispose geometry and materials
+              enemy.model.traverse(child => {
+                  if (child.isMesh) {
+                      if (child.geometry) child.geometry.dispose();
+                      if (child.material) {
+                          if (Array.isArray(child.material)) {
+                              child.material.forEach(mat => mat.dispose());
+                          } else {
+                              child.material.dispose();
+                          }
+                      }
+                  }
+              });
+          }
+          // Clear any pending timeouts (like hit flash)
+          if (enemy.hitFlashTimeout) {
+              clearTimeout(enemy.hitFlashTimeout);
+          }
+      });
+
+      // Clear the enemies array
+      this.enemies = [];
+      console.log("All enemies cleared.");
+  }
 
 } // End EnemySystem class

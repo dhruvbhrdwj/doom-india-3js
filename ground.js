@@ -1,22 +1,49 @@
 import * as THREE from 'three';
 
-// Create a textured ground with Indian-inspired patterns
-export function createIndianGround() {
-  // Create a repeating texture for the ground
-  const textureLoader = new THREE.TextureLoader();
+// Ground themes for different levels
+const groundThemes = {
+  sandstone: {
+    baseColor: '#D2B48C',
+    patternColor: '#8B4513',
+    name: 'Temple Grounds'
+  },
+  marble: {
+    baseColor: '#FFFAFA',
+    patternColor: '#C0C0C0',
+    name: 'Royal Palace'
+  },
+  redstone: {
+    baseColor: '#8B0000',
+    patternColor: '#4A0000',
+    name: 'Dark Fortress'
+  }
+};
+
+// Create a themed ground texture
+function createGroundTexture(theme = 'sandstone') {
+  const themeConfig = groundThemes[theme] || groundThemes.sandstone;
   
-  // Create a canvas for the procedural texture
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d');
   canvas.width = 512;
   canvas.height = 512;
   
-  // Fill background with sandy color
-  context.fillStyle = '#D2B48C';
+  // Fill background with theme color
+  context.fillStyle = themeConfig.baseColor;
   context.fillRect(0, 0, canvas.width, canvas.height);
   
-  // Add some Indian-inspired patterns
-  context.strokeStyle = '#8B4513';
+  // Add some texture noise
+  for (let i = 0; i < 30000; i++) {
+    const x = Math.random() * canvas.width;
+    const y = Math.random() * canvas.height;
+    const size = Math.random() * 2 + 1;
+    const alpha = Math.random() * 0.15;
+    context.fillStyle = `rgba(0, 0, 0, ${alpha})`;
+    context.fillRect(x, y, size, size);
+  }
+  
+  // Add Indian-inspired patterns
+  context.strokeStyle = themeConfig.patternColor;
   context.lineWidth = 2;
   
   // Draw mandala-like patterns
@@ -52,15 +79,40 @@ export function createIndianGround() {
     context.lineTo(x2, y2);
     context.stroke();
   }
+
+  // Add theme-specific decorations
+  if (theme === 'redstone') {
+    // Add cracks/lava lines for dark fortress
+    context.strokeStyle = '#FF4500';
+    context.lineWidth = 3;
+    for (let i = 0; i < 10; i++) {
+      const startX = Math.random() * canvas.width;
+      const startY = Math.random() * canvas.height;
+      context.beginPath();
+      context.moveTo(startX, startY);
+      for (let j = 0; j < 5; j++) {
+        const dx = (Math.random() - 0.5) * 100;
+        const dy = (Math.random() - 0.5) * 100;
+        context.lineTo(startX + dx, startY + dy);
+      }
+      context.stroke();
+    }
+  }
   
-  // Create texture from canvas
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(10, 10);
+  texture.repeat.set(25, 25);
   
-  // Create ground geometry
-  const groundGeometry = new THREE.PlaneGeometry(200, 200, 32, 32);
+  return texture;
+}
+
+// Create ground mesh with default theme
+export function createIndianGround(theme = 'sandstone') {
+  const texture = createGroundTexture(theme);
+  
+  // Create ground geometry - expanded to 500x500
+  const groundGeometry = new THREE.PlaneGeometry(500, 500, 64, 64);
   
   // Create material with the texture
   const groundMaterial = new THREE.MeshStandardMaterial({
@@ -72,8 +124,26 @@ export function createIndianGround() {
   
   // Create mesh
   const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-  ground.rotation.x = -Math.PI / 2;
+  ground.rotation.x = -Math.PI / 2; // Rotate to be horizontal
+  ground.position.y = 0; // Explicitly set ground at y=0
   ground.receiveShadow = true;
+  ground.name = 'ground';
+  
+  // Store reference to update theme later
+  ground.userData.currentTheme = theme;
+  ground.userData.updateTheme = (newTheme) => {
+    const newTexture = createGroundTexture(newTheme);
+    ground.material.map = newTexture;
+    ground.material.needsUpdate = true;
+    ground.userData.currentTheme = newTheme;
+  };
   
   return ground;
+}
+
+// Update existing ground with new theme
+export function updateGroundTheme(ground, theme) {
+  if (ground && ground.userData.updateTheme) {
+    ground.userData.updateTheme(theme);
+  }
 }
