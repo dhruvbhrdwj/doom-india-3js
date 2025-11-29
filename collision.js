@@ -39,23 +39,40 @@ export class CollisionSystem {
     const collisionPadding = 0.01; // Small padding for checks
 
     // --- 1. Ground Check ---
+    // Cast ray from a point above the player to ensure we detect ground even if player is falling
+    const rayStartY = Math.max(newPosition.y, oldPosition.y) + 0.5; // Start from higher point
+    const rayStart = new THREE.Vector3(newPosition.x, rayStartY, newPosition.z);
+    const rayLength = playerHeightCurrent + stepHeight + 10; // Longer ray to catch ground
+    
     const groundCheckRay = new THREE.Raycaster(
-        newPosition,
+        rayStart,
         new THREE.Vector3(0, -1, 0),
         0,
-        playerHeightCurrent + stepHeight + 0.1
+        rayLength
     );
     const groundIntersects = groundCheckRay.intersectObjects(this.collidableObjects, true);
     let highestGroundY = -Infinity;
+    
     groundIntersects.forEach(intersect => {
-        if (intersect.point.y < newPosition.y) {
+        // Accept any intersection below the ray start
+        if (intersect.point.y <= rayStartY) {
              highestGroundY = Math.max(highestGroundY, intersect.point.y);
         }
     });
+    
+    // Fallback: if no ground found but player is near y=0, snap to ground level
+    if (highestGroundY === -Infinity && newPosition.y < playerHeightCurrent + 5) {
+        highestGroundY = 0; // Default ground level
+    }
+    
     const targetFeetY = newPosition.y - playerHeightCurrent;
     if (highestGroundY > -Infinity && targetFeetY <= highestGroundY + stepHeight) {
         // Apply epsilon offset when snapping to ground
-        resolvedPosition.y = highestGroundY + playerHeightCurrent + collisionPadding; // Use padding
+        resolvedPosition.y = highestGroundY + playerHeightCurrent + collisionPadding;
+        onGround = true;
+    } else if (highestGroundY > -Infinity && newPosition.y < highestGroundY + playerHeightCurrent + 1) {
+        // If we're close to ground but slightly above, still snap to it
+        resolvedPosition.y = highestGroundY + playerHeightCurrent + collisionPadding;
         onGround = true;
     } else {
         onGround = false;

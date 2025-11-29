@@ -44,6 +44,10 @@ export class WeaponSystem {
     // Raycaster for shooting
     this.raycaster = new THREE.Raycaster();
 
+    // Audio system for gunshot sounds
+    this.audioContext = null;
+    this.initAudio();
+
     // Initialize weapons
     this.initializeWeapons();
 
@@ -54,6 +58,160 @@ export class WeaponSystem {
     this.updateAmmoUI(); // Update UI once on creation
 
     console.log("Weapon System Initialized");
+  }
+
+  // Initialize Web Audio API for sound effects
+  initAudio() {
+    try {
+      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      console.log("Audio context initialized");
+    } catch (e) {
+      console.warn("Web Audio API not supported:", e);
+      this.audioContext = null;
+    }
+  }
+
+  // Play gunshot sound using procedural audio
+  playGunshotSound(weaponName) {
+    if (!this.audioContext) return;
+
+    // Resume audio context if suspended (required by browsers)
+    if (this.audioContext.state === 'suspended') {
+      this.audioContext.resume();
+    }
+
+    const ctx = this.audioContext;
+    const now = ctx.currentTime;
+
+    // Create oscillator for the "crack" sound
+    const oscillator = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+    const filterNode = ctx.createBiquadFilter();
+
+    // Configure based on weapon type
+    let frequency = 150;
+    let duration = 0.1;
+    let volume = 0.3;
+
+    switch(weaponName) {
+      case 'Pistol':
+        frequency = 200;
+        duration = 0.08;
+        volume = 0.25;
+        break;
+      case 'Rifle':
+        frequency = 120;
+        duration = 0.06;
+        volume = 0.3;
+        break;
+      case 'Shotgun':
+        frequency = 80;
+        duration = 0.15;
+        volume = 0.4;
+        break;
+    }
+
+    // Oscillator setup
+    oscillator.type = 'sawtooth';
+    oscillator.frequency.setValueAtTime(frequency, now);
+    oscillator.frequency.exponentialRampToValueAtTime(40, now + duration);
+
+    // Filter for more realistic sound
+    filterNode.type = 'lowpass';
+    filterNode.frequency.setValueAtTime(3000, now);
+    filterNode.frequency.exponentialRampToValueAtTime(300, now + duration);
+
+    // Envelope for the sound
+    gainNode.gain.setValueAtTime(volume, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    // Connect nodes
+    oscillator.connect(filterNode);
+    filterNode.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    // Add noise burst for more realistic gunshot
+    const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * duration, ctx.sampleRate);
+    const noiseData = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < noiseData.length; i++) {
+      noiseData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.02));
+    }
+    
+    const noiseSource = ctx.createBufferSource();
+    noiseSource.buffer = noiseBuffer;
+    
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(volume * 0.5, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + duration * 0.5);
+    
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = 'bandpass';
+    noiseFilter.frequency.value = 1000;
+    noiseFilter.Q.value = 0.5;
+    
+    noiseSource.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(ctx.destination);
+
+    // Play sounds
+    oscillator.start(now);
+    oscillator.stop(now + duration);
+    noiseSource.start(now);
+    noiseSource.stop(now + duration);
+  }
+
+  // Play enemy death sound - satisfying kill confirmation
+  playEnemyDeathSound() {
+    if (!this.audioContext) return;
+
+    if (this.audioContext.state === 'suspended') {
+      this.audioContext.resume();
+    }
+
+    const ctx = this.audioContext;
+    const now = ctx.currentTime;
+    const duration = 0.3;
+
+    // Create a descending tone for death sound
+    const oscillator = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+
+    oscillator.type = 'square';
+    oscillator.frequency.setValueAtTime(400, now);
+    oscillator.frequency.exponentialRampToValueAtTime(100, now + duration);
+
+    gainNode.gain.setValueAtTime(0.2, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    oscillator.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    // Add a satisfying "splat" noise
+    const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 0.15, ctx.sampleRate);
+    const noiseData = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < noiseData.length; i++) {
+      noiseData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.03));
+    }
+
+    const noiseSource = ctx.createBufferSource();
+    noiseSource.buffer = noiseBuffer;
+
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.15, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = 'lowpass';
+    noiseFilter.frequency.value = 800;
+
+    noiseSource.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(ctx.destination);
+
+    oscillator.start(now);
+    oscillator.stop(now + duration);
+    noiseSource.start(now);
+    noiseSource.stop(now + 0.15);
   }
 
   // Initialize available weapons
@@ -361,8 +519,8 @@ export class WeaponSystem {
     // Perform Raycast for hit detection
     this.performRaycast(weapon);
 
-    // Play sound (placeholder)
-    // console.log(`Fired ${weapon.name}`);
+    // Play gunshot sound
+    this.playGunshotSound(weapon.name);
 
     // Auto reload if empty (optional, some games require manual reload)
     if (weapon.ammo === 0 && weapon.ammoReserve > 0) {

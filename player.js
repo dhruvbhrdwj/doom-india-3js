@@ -10,14 +10,15 @@ export class PlayerController {
 
     // Player state
     // --- FIX: Changed initial starting position ---
-    this.initialPosition = new THREE.Vector3(0, 20, 100); // Start further back (Z=100)
+    // Structures at: (-50,-40), (40,-60), (0,50), (60,20) - spawn player in a clear area
+    this.initialPosition = new THREE.Vector3(0, 1.6, -20); // Start at eye level in clear area between structures
     // ---------------------------------------------
     this.playerHeight = 1.6; // Standing height (adjust if needed based on world scale)
     this.crouchHeight = 0.8; // Crouching height
     this.isCrouching = false;
     this.isRunning = false;
     this.canJump = false; // Initialize to false, set true when grounded
-    this.jumpForce = 350; // Adjust as needed for desired jump height
+    this.jumpForce = 150; // Reduced for realistic jump height
 
     // Movement state
     this.moveForward = false;
@@ -71,8 +72,8 @@ export class PlayerController {
     const material = new THREE.MeshBasicMaterial({
       color: 0xff0000, // Red for debugging
       wireframe: true,
-      visible: true, // Make invisible in game (set true for debugging)
-      opacity: 0.5,   // Make slightly transparent if visible
+      visible: false, // Hidden in game (set true for debugging)
+      opacity: 0.5,
       transparent: true
     });
 
@@ -126,13 +127,44 @@ export class PlayerController {
     // Reset head bob/sway timers
     this.bobTimer = 0;
     this.swayTimer = 0;
-    this.originalYOffset = this.camera.position.y; // Reset base Y for bobbing
 
-     // Reset player body position and scale
-    this.playerBody.position.set(targetPosition.x, targetPosition.y - this.playerHeight / 2, targetPosition.z);
+    // Immediately check for ground and snap to it
+    // Cast a ray downward to find ground
+    const rayStart = targetPosition.clone();
+    rayStart.y += 5; // Start from above the target position
+    const groundRay = new THREE.Raycaster(
+        rayStart,
+        new THREE.Vector3(0, -1, 0),
+        0,
+        20 // Check up to 20 units down
+    );
+    const groundIntersects = groundRay.intersectObjects(this.collisionSystem.collidableObjects, true);
+    
+    let finalPosition = targetPosition.clone();
+    if (groundIntersects.length > 0) {
+        // Found ground - place player on it
+        const groundY = groundIntersects[0].point.y;
+        finalPosition.y = groundY + this.playerHeight + 0.01; // Eye level above ground
+        this.canJump = true;
+    } else {
+        // No ground found - use default ground level (y=0)
+        finalPosition.y = this.playerHeight + 0.01;
+        this.canJump = true;
+    }
+    
+    // Use the ground-resolved position
+    this.camera.position.copy(finalPosition);
+    this.originalYOffset = finalPosition.y; // Set base Y from ground-resolved position
+
+    // Reset player body position and scale
+    this.playerBody.position.set(
+        this.camera.position.x, 
+        this.camera.position.y - this.playerHeight / 2, 
+        this.camera.position.z
+    );
     this.playerBody.scale.y = 1; // Ensure standing scale
 
-    console.log(`PlayerController reset. Position set to: (${targetPosition.x.toFixed(2)}, ${targetPosition.y.toFixed(2)}, ${targetPosition.z.toFixed(2)})`);
+    console.log(`PlayerController reset. Position set to: (${this.camera.position.x.toFixed(2)}, ${this.camera.position.y.toFixed(2)}, ${this.camera.position.z.toFixed(2)}), onGround: ${this.canJump}`);
   }
 
 
@@ -350,17 +382,6 @@ export class PlayerController {
     this.velocity.x += forwardVelocity.x + strafeVelocity.x;
     this.velocity.z += forwardVelocity.z + strafeVelocity.z;
 
-
-    let bobOffset = 0;
-    const isMovingHorizontally = this.moveForward || this.moveBackward || this.moveLeft || this.moveRight;
-    if (this.bobEnabled && isMovingHorizontally && this.canJump) { // Only bob when moving on ground
-        let bobFreq = this.bobFrequency;
-        if (this.isRunning && !this.isCrouching) { bobFreq *= 1.5; }
-        else if (this.isCrouching) { bobFreq *= 0.7; }
-        this.bobTimer += clampedDelta * bobFreq;
-        bobOffset = Math.sin(this.bobTimer) * this.bobAmplitude;
-    }
-
     // --- Collision Detection ---
     // Store current position
     const oldPosition = this.camera.position.clone();
@@ -368,10 +389,6 @@ export class PlayerController {
     // Calculate potential new position based on velocity
     const deltaPosition = this.velocity.clone().multiplyScalar(clampedDelta);
     let newPosition = oldPosition.clone().add(deltaPosition);
-
-    // --- Apply Head Bob to the *desired* new position BEFORE collision ---
-    // Note: originalYOffset should be the stable Y from the *previous* frame's collision result
-    newPosition.y = this.originalYOffset + deltaPosition.y + bobOffset;
 
     // Resolve collision using the external system
     // The collision system should handle ground detection and response
@@ -393,15 +410,32 @@ export class PlayerController {
             this.velocity.y = 0;
         }
         this.canJump = true;
+        // Store the stable ground Y position for head bob reference
+        this.originalYOffset = this.camera.position.y;
     } else {
         this.canJump = false; // Cannot jump if in the air
     }
 
-     // If collision stopped vertical movement upwards (hit ceiling)
+    // If collision stopped vertical movement upwards (hit ceiling)
     if (collisionResult.hitCeiling && this.velocity.y > 0) {
         this.velocity.y = 0;
     }
 
+    // --- Apply Head Bob AFTER Collision Resolution ---
+    const isMoving = this.moveForward || this.moveBackward || this.moveLeft || this.moveRight;
+    
+    if (this.bobEnabled && isMoving && this.canJump) {
+        // Calculate and apply head bob offset
+        let bobFreq = this.bobFrequency;
+        if (this.isRunning && !this.isCrouching) { bobFreq *= 1.5; }
+        else if (this.isCrouching) { bobFreq *= 0.7; }
+        this.bobTimer += clampedDelta * bobFreq;
+        const bobOffset = Math.sin(this.bobTimer) * this.bobAmplitude;
+        this.camera.position.y = this.originalYOffset + bobOffset;
+    } else {
+        // Reset bob timer when not moving
+        this.bobTimer = 0;
+    }
 
     // --- Update Player Body Visual ---
     // Sync the invisible collision body's position with the camera's resolved position
@@ -412,18 +446,6 @@ export class PlayerController {
     this.playerBody.position.z = this.camera.position.z;
     // Rotation is handled by PointerLockControls on the camera
 
-
-    // --- Effects ---
-    const isMoving = this.moveForward || this.moveBackward || this.moveLeft || this.moveRight;
-
-    // Head bobbing effect when moving on the ground
-    if (this.bobEnabled && isMoving && this.canJump) {
-      this.updateHeadBob(clampedDelta);
-    } else {
-        // Reset bob smoothly if stopped or in air
-        this.camera.position.y += (this.originalYOffset - this.camera.position.y) * 0.1;
-    }
-
     // Weapon sway effect
     this.updateWeaponSway(clampedDelta, isMoving);
 
@@ -431,25 +453,6 @@ export class PlayerController {
     if (this.canJump && isMoving) {
       this.updateFootsteps(clampedDelta);
     }
-  }
-
-
-  updateHeadBob(delta) {
-    // Calculate bob frequency based on movement speed
-    let bobFreq = this.bobFrequency;
-    if (this.isRunning && !this.isCrouching) {
-      bobFreq *= 1.5;
-    } else if (this.isCrouching) {
-      bobFreq *= 0.7;
-    }
-
-    this.bobTimer += delta * bobFreq;
-
-    // Vertical bobbing - apply relative to the originalYOffset established during crouch/stand/reset
-    const bobOffset = Math.sin(this.bobTimer) * this.bobAmplitude;
-
-    // Apply bob offset relative to the base Y position
-    this.camera.position.y = this.originalYOffset + bobOffset;
   }
 
 
