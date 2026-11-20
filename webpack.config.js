@@ -1,48 +1,17 @@
-const path = require('path');
-const HtmlWebpackPlugin = require('html-webpack-plugin');
+import { fileURLToPath } from 'node:url';
+import HtmlWebpackPlugin from 'html-webpack-plugin';
 
-module.exports = {
+export default {
   mode: 'development',
   entry: './index.js',
   output: {
     filename: 'bundle.js',
-    path: path.resolve(__dirname, 'dist'),
+    path: fileURLToPath(new URL('./dist', import.meta.url)),
+    clean: true,
   },
   devServer: {
-    static: {
-      directory: path.resolve(__dirname),
-    },
-    hot: true,
-    allowedHosts: 'all',
-    host: '0.0.0.0',
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-    }
+    host: '127.0.0.1',
+    static: false,
   },
-  plugins: [
-    new HtmlWebpackPlugin({
-      title: 'Indian FPS Game',
-      template: './index.html',
-    }),
-  ],
-  module: {
-    rules: [
-      {
-        test: /\.css$/i,
-        use: ['style-loader', 'css-loader'],
-      },
-      {
-        test: /\.(png|svg|jpg|jpeg|gif)$/i,
-        type: 'asset/resource',
-      },
-      {
-        test: /\.(woff|woff2|eot|ttf|otf)$/i,
-        type: 'asset/resource',
-      },
-      {
-        test: /\.(obj|mtl|gltf|glb)$/i,
-        type: 'asset/resource',
-      },
-    ],
-  },
+  plugins: [new HtmlWebpackPlugin({ template: './index.html' })],
 };

@@ -4,7 +4,6 @@ import * as THREE from 'three';
 // Create detailed Indian architectural elements
 export class IndianArchitecturalElements {
     constructor() {
-        this.textureLoader = new THREE.TextureLoader();
         this.materials = this.createMaterials();
         this.structuresGroup = new THREE.Group(); // Group to hold all created structures
         // Note: The original 'structures' array is removed as we now use the group's children.
@@ -117,6 +116,8 @@ export class IndianArchitecturalElements {
         }
 
         const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.anisotropy = 8;
         texture.wrapS = THREE.RepeatWrapping;
         texture.wrapT = THREE.RepeatWrapping;
         texture.needsUpdate = true; // Important for canvas textures
@@ -162,6 +163,8 @@ export class IndianArchitecturalElements {
         }
 
         const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.anisotropy = 8;
         texture.wrapS = THREE.RepeatWrapping;
         texture.wrapT = THREE.RepeatWrapping;
         texture.needsUpdate = true;
@@ -207,6 +210,8 @@ export class IndianArchitecturalElements {
 
 
         const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.anisotropy = 8;
         texture.wrapS = THREE.RepeatWrapping;
         texture.wrapT = THREE.RepeatWrapping;
         texture.needsUpdate = true;
@@ -271,6 +276,8 @@ export class IndianArchitecturalElements {
         }
 
         const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.anisotropy = 8;
         texture.wrapS = THREE.RepeatWrapping;
         texture.wrapT = THREE.RepeatWrapping;
         texture.needsUpdate = true;
@@ -332,6 +339,8 @@ export class IndianArchitecturalElements {
 
 
         const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.anisotropy = 8;
         texture.wrapS = THREE.RepeatWrapping;
         texture.wrapT = THREE.RepeatWrapping;
         texture.needsUpdate = true;
@@ -482,12 +491,29 @@ export class IndianArchitecturalElements {
         entranceRoof.userData = { isCollidable: true, type: 'structure_roof' };
         entranceGroup.add(entranceRoof);
 
-        // Entrance hole (visual only, doesn't need collision usually)
-        const entranceHoleGeometry = new THREE.PlaneGeometry(4 * scale, 6 * scale); // Use Plane for a simple hole
-        const entranceHole = new THREE.Mesh(entranceHoleGeometry, this.materials.blackHole);
-        // Positioned on the front face of the entrance base
-        entranceHole.position.set(0, 5 * scale, 6.01 * scale); // Slightly in front of the entrance base face
-        entranceGroup.add(entranceHole);
+        const door = this.createArch(3.65 * scale, 5.8 * scale, 0.26 * scale, this.materials.wood);
+        door.position.set(0, 4.6 * scale, 6.22 * scale);
+        entranceGroup.add(door);
+        for (const x of [-2.8, 2.8]) {
+            const pillar = this.createDecorativePillar(scale * 0.69);
+            pillar.position.set(x * scale, 1.7 * scale, 6.5 * scale);
+            entranceGroup.add(pillar);
+        }
+        for (const y of [2.45, 7.35, 8.3, 10.65]) {
+            const molding = new THREE.Mesh(new THREE.BoxGeometry(8.45 * scale, 0.31 * scale, 0.46 * scale),
+                this.materials.sandstone);
+            molding.position.set(0, y * scale, 6.02 * scale);
+            molding.castShadow = molding.receiveShadow = true;
+            entranceGroup.add(molding);
+        }
+        for (const [y, radius] of [[12, 6.02], [13.5, 6.57], [18, 4.83], [22.5, 3.04], [25.5, 1.25]]) {
+            const band = new THREE.Mesh(new THREE.TorusGeometry(radius * scale, 0.17 * scale, 6, 32),
+                this.materials.sandstone);
+            band.rotation.x = Math.PI / 2;
+            band.position.y = y * scale;
+            band.castShadow = band.receiveShadow = true;
+            temple.add(band);
+        }
 
         temple.add(entranceGroup);
 
@@ -615,44 +641,29 @@ export class IndianArchitecturalElements {
         gopuramBase.userData = { isCollidable: true, type: 'structure_gopuram_base' };
         gopuramGroup.add(gopuramBase);
 
-        // Gopuram Upper Structure (tapered)
-        const gopuramTopWidth = gopuramBaseWidth * 0.7;
-        const gopuramTopDepth = gopuramBaseDepth * 0.7;
-        const gopuramTopHeight = 15 * scale;
-        const gopuramTopShape = new THREE.Shape();
-        // Define trapezoidal profile
-        gopuramTopShape.moveTo(-gopuramBaseWidth/2, 0);
-        gopuramTopShape.lineTo(gopuramBaseWidth/2, 0);
-        gopuramTopShape.lineTo(gopuramTopWidth/2, gopuramTopHeight);
-        gopuramTopShape.lineTo(-gopuramTopWidth/2, gopuramTopHeight);
-        gopuramTopShape.lineTo(-gopuramBaseWidth/2, 0);
-
-        const extrudeSettings = { depth: gopuramBaseDepth, bevelEnabled: false };
-        const gopuramTopGeo = new THREE.ExtrudeGeometry(gopuramTopShape, extrudeSettings);
-        // Adjust extrusion depth and position
-        gopuramTopGeo.translate(0, 0, -gopuramBaseDepth/2); // Center the extrusion
-        const gopuramTop = new THREE.Mesh(gopuramTopGeo, this.materials.paintedWall); // Use different material
-        gopuramTop.position.set(0, gopuramBaseHeight, 0); // Position on top of base
-        gopuramTop.castShadow = true;
-        gopuramTop.receiveShadow = true;
-        gopuramTop.userData = { isCollidable: true, type: 'structure_gopuram_top' };
-        gopuramGroup.add(gopuramTop);
-
-
-        // Gopuram Entrance Hole (visual)
-        const entranceHoleWidth = gopuramBaseWidth * 0.4;
-        const entranceHoleHeight = gopuramBaseHeight * 0.6;
-        const entranceHoleGeometry = new THREE.PlaneGeometry(entranceHoleWidth, entranceHoleHeight);
-        const entranceHole = new THREE.Mesh(entranceHoleGeometry, this.materials.blackHole);
-        // Position on the front face of the gopuram base
-        entranceHole.position.set(0, entranceHoleHeight / 2, gopuramBaseDepth / 2 + 0.01); // Slightly in front
-        gopuramGroup.add(entranceHole);
-         // Add a corresponding hole on the back face
-        const entranceHoleBack = entranceHole.clone();
-        entranceHoleBack.position.z = -gopuramBaseDepth / 2 - 0.01; // Slightly behind
-        entranceHoleBack.rotation.y = Math.PI; // Rotate to face inwards
-        gopuramGroup.add(entranceHoleBack);
-
+        for (let tier = 0; tier < 7; tier++) {
+            const width = gopuramBaseWidth - tier * 1.14 * scale;
+            const depth = gopuramBaseDepth - tier * 0.53 * scale;
+            const y = gopuramBaseHeight + (tier * 2.05 + 0.86) * scale;
+            const block = new THREE.Mesh(new THREE.BoxGeometry(width, 1.72 * scale, depth),
+                this.materials.redstone);
+            block.position.y = y;
+            block.castShadow = block.receiveShadow = true;
+            gopuramGroup.add(block);
+            const ledge = new THREE.Mesh(new THREE.BoxGeometry(width + 0.58 * scale, 0.33 * scale, depth + 0.46 * scale),
+                this.materials.sandstone);
+            ledge.position.y = y + 0.96 * scale;
+            ledge.castShadow = ledge.receiveShadow = true;
+            gopuramGroup.add(ledge);
+            for (const dx of [-0.32, 0, 0.32]) {
+                const relief = this.createArch(width * 0.19, 1.46 * scale, 0.25 * scale, this.materials.paintedWall);
+                relief.position.set(width * dx, y + 0.05, depth / 2 + 0.14 * scale);
+                gopuramGroup.add(relief);
+            }
+        }
+        const door = this.createArch(gopuramBaseWidth * 0.4, 7.6 * scale, 0.35 * scale, this.materials.wood);
+        door.position.set(0, 3.35 * scale, gopuramBaseDepth / 2 + 0.3 * scale);
+        gopuramGroup.add(door);
 
         temple.add(gopuramGroup);
 
@@ -754,31 +765,11 @@ export class IndianArchitecturalElements {
         rightArch.rotation.y = Math.PI / 2;
         structure.add(rightArch);
 
-        // Add visual holes behind arches
-        const holeMaterial = this.materials.blackHole;
-        const holeWidth = archWidth * 0.8;
-        const holeHeight = archHeight * 0.9; // Slightly smaller than arch opening
-        const holeY = 4*scale + holeHeight/2; // Position relative to base
-
-        const frontHole = new THREE.Mesh(new THREE.PlaneGeometry(holeWidth, holeHeight), holeMaterial);
-        frontHole.position.set(0, holeY, archOffset - archDepth/2 - 0.01);
-        structure.add(frontHole);
-
-        const backHole = new THREE.Mesh(new THREE.PlaneGeometry(holeWidth, holeHeight), holeMaterial);
-        backHole.position.set(0, holeY, -archOffset + archDepth/2 + 0.01);
-        backHole.rotation.y = Math.PI;
-        structure.add(backHole);
-
-        const leftHole = new THREE.Mesh(new THREE.PlaneGeometry(holeWidth, holeHeight), holeMaterial);
-        leftHole.position.set(-archOffset + archDepth/2 + 0.01, holeY, 0);
-        leftHole.rotation.y = -Math.PI / 2;
-        structure.add(leftHole);
-
-        const rightHole = new THREE.Mesh(new THREE.PlaneGeometry(holeWidth, holeHeight), holeMaterial);
-        rightHole.position.set(archOffset - archDepth/2 - 0.01, holeY, 0);
-        rightHole.rotation.y = Math.PI / 2;
-        structure.add(rightHole);
-
+        for (const arch of [frontArch, backArch, leftArch, rightArch]) {
+            const inset = this.createArch(archWidth * 0.73, archHeight * 0.75, 0.14 * scale, this.materials.wood);
+            inset.position.set(0, -archHeight * 0.075, archDepth / 2 + 0.21 * scale);
+            arch.add(inset);
+        }
 
         // Position the entire structure
         structure.position.set(x, 0, z);
@@ -958,89 +949,5 @@ export class IndianArchitecturalElements {
 
         // The minaret group's origin is at the bottom center.
         return minaret;
-    }
-
-
-    // --- NEW METHOD: Create a Sample Layout ---
-    /**
-     * Creates a sample layout with different types of structures.
-     * Adds them to the internal structuresGroup and returns the group.
-     * @returns {THREE.Group} A group containing the generated structures.
-     */
-    createSampleLayout() {
-        console.log("Creating sample architectural layout...");
-        // Clear previous structures if any (optional, depends on use case)
-        // this.reset();
-
-        // Create instances of different structures at various positions
-        this.createNagaraTemple(-50, -40, 1.2); // x, z, scale
-        this.createDravidianTemple(40, -60, 1.0);
-        this.createIndoIslamicStructure(0, 50, 1.5);
-        this.createNagaraTemple(60, 20, 0.8);
-
-        console.log(`Layout created with ${this.structuresGroup.children.length} structures.`);
-        return this.structuresGroup; // Return the main group containing all structures
-    }
-
-
-    // --- Utility Methods ---
-
-    /**
-     * Returns the main group containing all created structures.
-     * @returns {THREE.Group} The group of structures.
-     */
-    getStructuresGroup() {
-        return this.structuresGroup;
-    }
-
-    /**
-    * Gets a specific structure group by its name (if names were assigned during creation).
-    * @param {string} name - The name of the structure group to find.
-    * @returns {THREE.Object3D | null} The found structure or null.
-    */
-    getStructureByName(name) {
-        return this.structuresGroup.getObjectByName(name);
-    }
-
-
-    // Reset function to clear all created structures from the main group
-    reset() {
-        console.log("Resetting architectural elements...");
-        // Iterate backwards while removing to avoid index issues
-        for (let i = this.structuresGroup.children.length - 1; i >= 0; i--) {
-            const structure = this.structuresGroup.children[i];
-
-            // Dispose of geometries and materials to free up GPU memory
-            structure.traverse(child => {
-                if (child instanceof THREE.Mesh) {
-                    if (child.geometry) {
-                        child.geometry.dispose();
-                        // console.log("Disposed geometry");
-                    }
-                    if (child.material) {
-                        // If materials are shared, dispose them carefully, maybe only at the end.
-                        // If unique materials per mesh, dispose here.
-                        if (Array.isArray(child.material)) {
-                            child.material.forEach(mat => {
-                                if (mat.map) mat.map.dispose();
-                                mat.dispose();
-                            });
-                        } else {
-                            if (child.material.map) {
-                                child.material.map.dispose(); // Dispose texture if it exists
-                                // console.log("Disposed texture");
-                            }
-                            child.material.dispose();
-                            // console.log("Disposed material");
-                        }
-                    }
-                }
-            });
-            // Remove the structure group from the main structures group
-            this.structuresGroup.remove(structure);
-        }
-         console.log("Architectural elements reset complete.");
-        // Note: Textures created in createMaterials are not disposed here,
-        // assuming they might be reused. Dispose them separately if needed.
     }
 }

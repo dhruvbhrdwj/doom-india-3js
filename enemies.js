@@ -1,102 +1,273 @@
 import * as THREE from 'three';
-// Assuming GLTFLoader might be used later for more complex models
-// import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { arenaHalfSize } from './collision.js';
 
-// Enemy AI and game logic
+const spacing = 2;
+const gridWidth = arenaHalfSize * 2 / spacing - 1;
+const gridOrigin = -arenaHalfSize + spacing;
+const neighbours = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const regularRadius = 0.62;
+const bossRadius = 1.8;
+
 export class EnemySystem {
-  constructor(scene, player, weaponSystem, collisionSystem, healthSystem) { // Added healthSystem for player damage
+  constructor(scene, player, collision, health) {
     this.scene = scene;
-    this.player = player; // Assumes player has a 'position' (THREE.Vector3) and potentially other methods/properties
-    this.weaponSystem = weaponSystem; // Needed for checking hits on enemies? Passed but not used directly in provided code.
-    this.collisionSystem = collisionSystem; // Assumes it has methods like 'add(object)' and 'remove(object)' for collision checks
-    this.healthSystem = healthSystem; // Assumes it has a method to apply damage to the player e.g., 'playerTakeDamage(amount)'
-
-    // Enemy state
+    this.player = player;
+    this.collision = collision;
+    this.health = health;
     this.enemies = [];
-    this.maxEnemies = 10;
-    this.spawnPoints = [];
-    this.difficultyLevel = 1;
-    this.killCount = 0;
-    this.lastSpawnTime = 0;
-    this.spawnInterval = 5; // Seconds between potential spawns
-    this.chaseThreshold = 50; // Distance at which enemies start chasing
-    this.idleThreshold = 60; // Distance at which enemies stop chasing and go idle
-
-    // Enemy models
-    this.enemyTypes = [
-      {
-        name: 'Rakshasa',
-        health: 100,
-        damage: 20,
-        speed: 3,
-        attackRange: 5, // Increased range for basic AI
-        attackRate: 1.5, // Attacks per second (means 1 attack every 1/1.5 = 0.67s)
-        model: this.createRakshasaModel(),
-        spawnWeight: 1,
-        animationUpdate: this.updateRakshasaAnimation,
-        height: 2.2 // Approximate height for raycasting/positioning
-      },
-      {
-        name: 'Asura',
-        health: 150,
-        damage: 30,
-        speed: 2,
-        attackRange: 6, // Increased range
-        attackRate: 0.5, // Slower attack rate (1 attack every 2s)
-        model: this.createAsuraModel(),
-        spawnWeight: 0.7,
-        animationUpdate: this.updateAsuraAnimation,
-        height: 2.5
-      },
-      {
-        name: 'Naga',
-        health: 80,
-        damage: 15,
-        speed: 4,
-        attackRange: 4, // Increased range
-        attackRate: 1, // 1 attack per second
-        model: this.createNagaModel(),
-        spawnWeight: 1.2,
-        animationUpdate: this.updateNagaAnimation,
-        height: 2.0 // Approximate height of torso/head for aiming
-      }
-    ];
-
-    // Boss enemy type (not in regular spawn pool)
-    this.bossType = {
-      name: 'GiantDemon',
-      health: 500,
-      damage: 50,
-      speed: 1.5,
-      attackRange: 8,
-      attackRate: 0.4, // Slower but devastating
-      model: null, // Created on demand
-      animationUpdate: this.updateBossAnimation,
-      height: 6.0,
-      isBoss: true
+    this.hitMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffcf9f, emissive: 0xff643b, emissiveIntensity: 1.3,
+    });
+    this.shadowGeometry = new THREE.CircleGeometry(1, 20).rotateX(-Math.PI / 2);
+    this.shadowMaterial = new THREE.MeshBasicMaterial({
+      color: 0x2a1814, transparent: true, opacity: 0.38, depthWrite: false,
+    });
+    this.types = {
+      Rakshasa: { health: 86, speed: 4.5, damage: 18, range: 2.3, cooldown: 1.15, aimHeight: 1.2,
+        template: this.createRakshasaModel(), animate: this.updateRakshasaAnimation },
+      Asura: { health: 126, speed: 3.1, damage: 26, range: 2.8, cooldown: 1.45, aimHeight: 1.45,
+        template: this.createAsuraModel(), animate: this.updateAsuraAnimation },
+      Naga: { health: 65, speed: 5.2, damage: 14, range: 2.1, cooldown: 0.95, aimHeight: 1.1,
+        template: this.createNagaModel(), animate: this.updateNagaAnimation },
+      GiantAsura: { health: 620, speed: 5.0, damage: 42, range: 4.3, cooldown: 2.0, aimHeight: 2.6,
+        template: this.createGiantDemonModel(), animate: this.updateBossAnimation },
     };
-
-    // Boss state
-    this.boss = null;
-    this.bossActive = false;
-    this.levelManager = null; // Set by level manager
-
-    // Pathfinding grid (Still basic)
-    this.gridSize = 2; // Size of each grid cell
-    this.grid = []; // Currently unused due to simplified pathfinding
-
-    // Initialize
-    this.setupSpawnPoints();
-    // this.initializePathfindingGrid(); // Keep this commented out unless implementing grid-based pathfinding
-    console.log("Enemy System Initialized");
+    this.raycaster = new THREE.Raycaster();
   }
 
-  // --- Model Creation (Keep as is, but add userData properties) ---
-  // Methods createRakshasaModel, createAsuraModel, createNagaModel remain here...
-  // (Code omitted for brevity, assume they are the same as provided previously)
+  buildNavigation() {
+    this.routes = [regularRadius, bossRadius].map(radius => {
+      const positions = Array.from({ length: gridWidth ** 2 }, (_, index) => new THREE.Vector3(
+        gridOrigin + (index % gridWidth) * spacing, 0, gridOrigin + Math.floor(index / gridWidth) * spacing,
+      ));
+      const walls = this.collision.bounds.filter(box => box.min.y < 0.7).map(box =>
+        box.clone().expandByVector(new THREE.Vector3(radius + 0.06, 0, radius + 0.06)));
+      const edges = positions.map(({ x, z }, index) => {
+        if (this.collision.blocked(x, z, 0, 1.6, radius + 0.1)) return null;
+        const col = index % gridWidth;
+        const row = Math.floor(index / gridWidth);
+        return neighbours.flatMap(([dx, dz]) => {
+          if (col + dx < 0 || col + dx >= gridWidth || row + dz < 0 || row + dz >= gridWidth) return [];
+          return this.collision.blocked(x + dx, z + dz, 0, 1.6, radius + 0.1) ? [] :
+            [index + dx + dz * gridWidth];
+        });
+      });
+      return { radius, positions, edges, walls, target: -1, distance: new Int16Array(positions.length) };
+    });
+  }
+
+  gridIndex(position) {
+    const cell = value => THREE.MathUtils.clamp(Math.round((value - gridOrigin) / spacing), 0, gridWidth - 1);
+    return cell(position.x) + cell(position.z) * gridWidth;
+  }
+
+  updateRoute(route, goal) {
+    let target = this.gridIndex(goal);
+    if (!route.edges[target]) {
+      let best = Infinity;
+      route.positions.forEach((position, index) => {
+        if (!route.edges[index]) return;
+        const distance = position.distanceToSquared(goal);
+        if (distance < best) {
+          best = distance;
+          target = index;
+        }
+      });
+    }
+    if (route.target === target) return;
+    route.target = target;
+    route.distance.fill(-1);
+    route.distance[target] = 0;
+    const queue = [target];
+    for (let i = 0; i < queue.length; i++) {
+      const index = queue[i];
+      for (const next of route.edges[index]) {
+        if (!route.edges[next] || route.distance[next] >= 0) continue;
+        route.distance[next] = route.distance[index] + 1;
+        queue.push(next);
+      }
+    }
+  }
+
+  pathClear(from, to, route) {
+    const origin = new THREE.Vector3(from.x, 0.35, from.z);
+    const destination = new THREE.Vector3(to.x, 0.35, to.z);
+    const direction = destination.sub(origin);
+    const length = direction.length();
+    const ray = new THREE.Ray(origin, direction.normalize());
+    const intersection = new THREE.Vector3();
+    return !route.walls.some(box => box.containsPoint(origin) ||
+      (ray.intersectBox(box, intersection) && origin.distanceToSquared(intersection) < length ** 2));
+  }
+
+  spawn(type, x, z) {
+    const definition = this.types[type];
+    const model = definition.template.clone();
+    const isBoss = type === 'GiantAsura';
+    if (isBoss) {
+      const aura = model.children.at(-1);
+      aura.material = aura.material.clone();
+    }
+    const parts = [];
+    model.traverse(mesh => {
+      if (mesh.isMesh && mesh.userData.isEnemyPart) parts.push([mesh, mesh.material]);
+    });
+    const radius = isBoss ? bossRadius : regularRadius;
+    const shadow = new THREE.Mesh(this.shadowGeometry, this.shadowMaterial);
+    shadow.scale.setScalar(radius * 1.3);
+    shadow.renderOrder = 1;
+    const enemy = {
+      type, ...definition, maxHealth: definition.health, model, parts, shadow, radius, isBoss,
+      position: new THREE.Vector3(x, 0, z),
+      state: 'chasing', cooldownLeft: 0.4, windup: 0, flash: 0, death: 0
+    };
+    model.position.copy(enemy.position);
+    shadow.position.set(x, 0.019, z);
+    for (const [mesh] of parts) mesh.userData.enemy = enemy;
+    this.scene.add(model, shadow);
+    model.updateMatrixWorld(true);
+    this.enemies.push(enemy);
+    return enemy;
+  }
+
+  damage(enemy, amount) {
+    if (enemy.state === 'dying') return false;
+    enemy.health = Math.max(0, enemy.health - amount);
+    enemy.flash = 0.085;
+    for (const [mesh] of enemy.parts) mesh.material = this.hitMaterial;
+    if (enemy.health === 0) {
+      enemy.state = 'dying';
+      enemy.onDeath?.(enemy);
+    }
+    return true;
+  }
+
+  getEnemyHitboxes() {
+    return this.enemies.flatMap(enemy => enemy.state === 'dying' ? [] : enemy.parts.map(([mesh]) => mesh));
+  }
+
+  clearAllEnemies() {
+    for (const enemy of this.enemies) this.removeModel(enemy);
+    this.enemies.length = 0;
+  }
+
+  removeModel(enemy) {
+    this.scene.remove(enemy.model, enemy.shadow);
+    if (enemy.isBoss) enemy.model.children.at(-1).material.dispose();
+  }
+
+  canAttack(enemy, target) {
+    const origin = enemy.position.clone();
+    origin.y = enemy.aimHeight;
+    const direction = target.clone().sub(origin);
+    this.raycaster.far = direction.length();
+    this.raycaster.set(origin, direction.normalize());
+    return this.raycaster.intersectObjects(this.collision.collidableObjects, false).length === 0;
+  }
+
+  chase(enemy, goal, delta) {
+    const route = this.routes[Number(enemy.isBoss)];
+    let waypoint = goal;
+    if (!this.pathClear(enemy.position, goal, route)) {
+      const cell = this.gridIndex(enemy.position);
+      const candidates = new Set([cell]);
+      for (const [dx, dz] of neighbours) {
+        const index = cell + dx + dz * gridWidth;
+        if (index >= 0 && index < route.positions.length) candidates.add(index);
+      }
+      const next = [...candidates]
+        .filter(index => route.distance[index] >= 0 &&
+          route.positions[index].distanceToSquared(enemy.position) > 0.03 &&
+          this.pathClear(enemy.position, route.positions[index], route))
+        .sort((a, b) => route.distance[a] - route.distance[b])[0];
+      if (next === undefined) return;
+      waypoint = route.positions[next];
+    }
+
+    const direction = new THREE.Vector3(waypoint.x - enemy.position.x, 0, waypoint.z - enemy.position.z);
+    const enraged = enemy.isBoss && enemy.health <= enemy.maxHealth / 2;
+    const step = Math.min(enemy.speed * (enraged ? 1.4 : 1) * delta, direction.length());
+    direction.normalize();
+    for (const other of this.enemies) {
+      if (other === enemy || other.state === 'dying') continue;
+      const offset = enemy.position.clone().sub(other.position);
+      const distance = offset.length();
+      const separation = enemy.radius + other.radius + 0.35;
+      if (distance > 0 && distance < separation) {
+        direction.addScaledVector(offset, (separation - distance) / (separation * distance));
+      }
+    }
+    direction.normalize();
+    const { position, radius } = enemy;
+    const x = position.x + direction.x * step;
+    const z = position.z + direction.z * step;
+    if (!this.collision.blocked(x, position.z, 0, 1.5, radius)) position.x = x;
+    if (!this.collision.blocked(position.x, z, 0, 1.5, radius)) position.z = z;
+  }
+
+  update(delta) {
+    const target = this.player.getPosition();
+    if (this.enemies.length === 0) return;
+    for (const route of this.routes) this.updateRoute(route, target);
+
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const enemy = this.enemies[i];
+      if (enemy.flash > 0) {
+        enemy.flash -= delta;
+        if (enemy.flash <= 0) {
+          for (const [mesh, material] of enemy.parts) mesh.material = material;
+        }
+      }
+      if (enemy.state === 'dying') {
+        enemy.death += delta;
+        const duration = enemy.isBoss ? 0.85 : 0.38;
+        enemy.model.scale.setScalar(Math.max(0, 1 - enemy.death / duration));
+        enemy.shadow.scale.copy(enemy.model.scale).multiplyScalar(enemy.radius * 1.3);
+        if (enemy.death >= duration) {
+          this.removeModel(enemy);
+          this.enemies.splice(i, 1);
+        }
+        continue;
+      }
+
+      enemy.cooldownLeft -= delta;
+      const distance = Math.hypot(target.x - enemy.position.x, target.z - enemy.position.z);
+      const inRange = distance < enemy.range && target.y < (enemy.isBoss ? 4 : 2.55);
+      const canAttack = inRange && this.canAttack(enemy, target);
+      if (enemy.windup > 0) {
+        enemy.windup -= delta;
+        if (enemy.windup <= 0 && canAttack) this.health.takeDamage(enemy.damage);
+      } else if (canAttack) {
+        if (enemy.cooldownLeft <= 0) {
+          enemy.windup = enemy.isBoss ? 0.56 : 0.26;
+          enemy.cooldownLeft = enemy.cooldown;
+        }
+      } else {
+        this.chase(enemy, target, delta);
+      }
+      enemy.state = canAttack || enemy.windup > 0 ? 'attacking' : 'chasing';
+      enemy.model.position.copy(enemy.position);
+      enemy.shadow.position.set(enemy.position.x, 0.019, enemy.position.z);
+      enemy.model.rotation.y = Math.atan2(target.x - enemy.position.x, target.z - enemy.position.z);
+      enemy.model.rotation.x = enemy.windup > 0 ? -0.19 : 0;
+      enemy.animate(enemy, delta);
+      enemy.model.updateMatrixWorld();
+    }
+  }
+
+  updateBossAnimation(enemy, delta) {
+    const state = enemy.model.userData.animationState;
+    state.walkTime += delta * 6;
+    const [body, , , , leftArm, rightArm] = enemy.model.children;
+    body.position.y = 2.28 + Math.sin(state.walkTime) * 0.08;
+    const aura = enemy.model.children.at(-1);
+    aura.material.opacity = enemy.health <= enemy.maxHealth / 2 ? 0.22 + Math.sin(state.walkTime * 2) * 0.09 : 0.075;
+    const swing = enemy.windup > 0 ? -1.2 : Math.sin(state.walkTime) * 0.22;
+    leftArm.rotation.x = swing;
+    rightArm.rotation.x = enemy.windup > 0 ? swing : -swing;
+  }
   createRakshasaModel() {
     const enemy = new THREE.Group();
-    // ... (geometry and material setup as before) ...
     const bodyGeometry = new THREE.CylinderGeometry(0.5, 0.3, 1.8, 8);
     const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x8B0000, roughness: 0.7, metalness: 0.3 });
     const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
@@ -163,13 +334,6 @@ export class EnemySystem {
     rightEye.userData.isEnemyPart = true;
     enemy.add(rightEye);
 
-    // Store original materials for hit flash
-    enemy.userData.originalMaterials = new Map();
-    enemy.traverse((child) => {
-        if (child.isMesh && child.material) {
-            enemy.userData.originalMaterials.set(child, child.material);
-        }
-    });
 
     enemy.userData.animationState = { walkTime: 0, attackTime: 0, isAttacking: false };
     enemy.castShadow = true;
@@ -184,7 +348,6 @@ export class EnemySystem {
 
   createAsuraModel() {
     const enemy = new THREE.Group();
-     // ... (geometry and material setup as before) ...
     const bodyGeometry = new THREE.CylinderGeometry(0.6, 0.4, 2.0, 8);
     const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x4682B4, roughness: 0.7, metalness: 0.5 });
     const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
@@ -249,13 +412,6 @@ export class EnemySystem {
     rightEye.userData.isEnemyPart = true;
     enemy.add(rightEye);
 
-    // Store original materials for hit flash
-    enemy.userData.originalMaterials = new Map();
-    enemy.traverse((child) => {
-        if (child.isMesh && child.material) {
-            enemy.userData.originalMaterials.set(child, child.material);
-        }
-    });
 
     enemy.userData.animationState = { walkTime: 0, attackTime: 0, isAttacking: false };
     enemy.castShadow = true;
@@ -270,7 +426,6 @@ export class EnemySystem {
 
   createNagaModel() {
     const enemy = new THREE.Group();
-    // ... (geometry and material setup as before) ...
     const segments = 8;
     const segmentHeight = 0.25;
     const bodyRadius = 0.3;
@@ -341,13 +496,6 @@ export class EnemySystem {
     enemy.add(rightEye);
 
 
-     // Store original materials for hit flash
-    enemy.userData.originalMaterials = new Map();
-    enemy.traverse((child) => {
-        if (child.isMesh && child.material) {
-            enemy.userData.originalMaterials.set(child, child.material);
-        }
-    });
 
     enemy.userData.animationState = { walkTime: 0, attackTime: 0, isAttacking: false, slitherTime: 0 };
     enemy.castShadow = true;
@@ -360,17 +508,17 @@ export class EnemySystem {
     return enemy;
   }
 
-  // Create Giant Demon Boss Model (3x scale, menacing appearance)
+  // Giant Asura model
   createGiantDemonModel() {
     const boss = new THREE.Group();
-    const scale = 3.0; // 3x normal size
+    const scale = 1.14;
 
     // Massive body
     const bodyGeometry = new THREE.CylinderGeometry(1.5 * scale, 1.0 * scale, 4.0 * scale, 12);
-    const bodyMaterial = new THREE.MeshStandardMaterial({ 
+    const bodyMaterial = new THREE.MeshStandardMaterial({
       color: 0x4A0000, // Dark blood red
-      roughness: 0.6, 
-      metalness: 0.4 
+      roughness: 0.6,
+      metalness: 0.4
     });
     const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
     body.position.y = 2.0 * scale;
@@ -379,10 +527,10 @@ export class EnemySystem {
 
     // Massive head
     const headGeometry = new THREE.SphereGeometry(1.0 * scale, 12, 12);
-    const headMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x660000, 
-      roughness: 0.5, 
-      metalness: 0.3 
+    const headMaterial = new THREE.MeshStandardMaterial({
+      color: 0x660000,
+      roughness: 0.5,
+      metalness: 0.3
     });
     const head = new THREE.Mesh(headGeometry, headMaterial);
     head.position.y = 4.5 * scale;
@@ -391,18 +539,18 @@ export class EnemySystem {
 
     // Giant horns
     const hornGeometry = new THREE.ConeGeometry(0.3 * scale, 1.5 * scale, 8);
-    const hornMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x1A1A1A, 
-      roughness: 0.3, 
-      metalness: 0.7 
+    const hornMaterial = new THREE.MeshStandardMaterial({
+      color: 0x1A1A1A,
+      roughness: 0.3,
+      metalness: 0.7
     });
-    
+
     const leftHorn = new THREE.Mesh(hornGeometry, hornMaterial);
     leftHorn.position.set(-0.7 * scale, 5.2 * scale, 0);
     leftHorn.rotation.z = -Math.PI / 5;
     leftHorn.userData.isEnemyPart = true;
     boss.add(leftHorn);
-    
+
     const rightHorn = new THREE.Mesh(hornGeometry, hornMaterial);
     rightHorn.position.set(0.7 * scale, 5.2 * scale, 0);
     rightHorn.rotation.z = Math.PI / 5;
@@ -411,18 +559,18 @@ export class EnemySystem {
 
     // Massive arms
     const armGeometry = new THREE.CylinderGeometry(0.4 * scale, 0.5 * scale, 2.5 * scale, 8);
-    const armMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x4A0000, 
-      roughness: 0.6, 
-      metalness: 0.4 
+    const armMaterial = new THREE.MeshStandardMaterial({
+      color: 0x4A0000,
+      roughness: 0.6,
+      metalness: 0.4
     });
-    
+
     const leftArm = new THREE.Mesh(armGeometry, armMaterial);
     leftArm.position.set(-1.8 * scale, 2.5 * scale, 0);
     leftArm.rotation.z = Math.PI / 4;
     leftArm.userData.isEnemyPart = true;
     boss.add(leftArm);
-    
+
     const rightArm = new THREE.Mesh(armGeometry, armMaterial);
     rightArm.position.set(1.8 * scale, 2.5 * scale, 0);
     rightArm.rotation.z = -Math.PI / 4;
@@ -431,17 +579,17 @@ export class EnemySystem {
 
     // Thick legs
     const legGeometry = new THREE.CylinderGeometry(0.5 * scale, 0.6 * scale, 2.0 * scale, 8);
-    const legMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x4A0000, 
-      roughness: 0.6, 
-      metalness: 0.4 
+    const legMaterial = new THREE.MeshStandardMaterial({
+      color: 0x4A0000,
+      roughness: 0.6,
+      metalness: 0.4
     });
-    
+
     const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
     leftLeg.position.set(-0.8 * scale, 1.0 * scale, 0);
     leftLeg.userData.isEnemyPart = true;
     boss.add(leftLeg);
-    
+
     const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
     rightLeg.position.set(0.8 * scale, 1.0 * scale, 0);
     rightLeg.userData.isEnemyPart = true;
@@ -449,17 +597,15 @@ export class EnemySystem {
 
     // Glowing eyes
     const eyeGeometry = new THREE.SphereGeometry(0.2 * scale, 8, 8);
-    const eyeMaterial = new THREE.MeshBasicMaterial({ 
+    const eyeMaterial = new THREE.MeshBasicMaterial({
       color: 0xFF0000,
-      emissive: 0xFF0000,
-      emissiveIntensity: 2
     });
-    
+
     const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
     leftEye.position.set(-0.4 * scale, 4.6 * scale, 0.8 * scale);
     leftEye.userData.isEnemyPart = true;
     boss.add(leftEye);
-    
+
     const rightEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
     rightEye.position.set(0.4 * scale, 4.6 * scale, 0.8 * scale);
     rightEye.userData.isEnemyPart = true;
@@ -477,17 +623,10 @@ export class EnemySystem {
     aura.position.y = 2.5 * scale;
     boss.add(aura);
 
-    // Store original materials for hit flash
-    boss.userData.originalMaterials = new Map();
-    boss.traverse((child) => {
-      if (child.isMesh && child.material) {
-        boss.userData.originalMaterials.set(child, child.material);
-      }
-    });
 
-    boss.userData.animationState = { 
-      walkTime: 0, 
-      attackTime: 0, 
+    boss.userData.animationState = {
+      walkTime: 0,
+      attackTime: 0,
       isAttacking: false,
       chargeTime: 0,
       isCharging: false,
@@ -503,461 +642,6 @@ export class EnemySystem {
     return boss;
   }
 
-  // Spawn the boss enemy
-  spawnBoss() {
-    if (this.bossActive) return;
-
-    console.log("Spawning Giant Demon Boss!");
-
-    // Create boss model
-    const bossModel = this.createGiantDemonModel();
-
-    // Create boss enemy object
-    const boss = {
-      id: THREE.MathUtils.generateUUID(),
-      type: 'GiantDemon',
-      health: this.bossType.health,
-      maxHealth: this.bossType.health,
-      damage: this.bossType.damage,
-      speed: this.bossType.speed,
-      attackRange: this.bossType.attackRange,
-      attackRate: this.bossType.attackRate,
-      lastAttackTime: 0,
-      model: bossModel,
-      position: new THREE.Vector3(0, 0, -60), // Spawn in center-back
-      target: this.player.getPosition().clone(),
-      path: [],
-      currentPathIndex: 0,
-      state: 'idle',
-      lastStateChange: performance.now() / 1000,
-      height: this.bossType.height,
-      animationUpdate: this.bossType.animationUpdate,
-      hitFlashTimeout: null,
-      enemySystem: this,
-      isBoss: true,
-
-      // Boss-specific attack methods
-      groundSlam: false,
-      chargeAttack: false,
-      lastSpecialAttack: 0,
-      specialAttackCooldown: 5, // Seconds between special attacks
-
-      takeDamage: function(amount) {
-        if (this.state === 'dying') return;
-
-        this.health -= amount;
-        console.log(`BOSS took ${amount} damage! ${this.health.toFixed(0)}/${this.maxHealth.toFixed(0)} remaining`);
-
-        // Hit flash effect
-        if (this.hitFlashTimeout) clearTimeout(this.hitFlashTimeout);
-        const hitMaterial = new THREE.MeshStandardMaterial({
-          color: 0xFFFFFF,
-          emissive: 0xFFFFFF,
-          emissiveIntensity: 0.8,
-          roughness: 1.0,
-          metalness: 0.0,
-          transparent: true,
-          opacity: 0.8
-        });
-
-        this.model.traverse((child) => {
-          if (child.isMesh && child.material) {
-            child.material = hitMaterial;
-          }
-        });
-
-        this.hitFlashTimeout = setTimeout(() => {
-          this.model.traverse((child) => {
-            if (child.isMesh && this.model.userData.originalMaterials) {
-              const originalMaterial = this.model.userData.originalMaterials.get(child);
-              if (originalMaterial) {
-                child.material = originalMaterial;
-              }
-            }
-          });
-          this.hitFlashTimeout = null;
-        }, 100);
-
-        if (this.health <= 0) {
-          this.enemySystem.handleBossDeath(this);
-        }
-      }
-    };
-
-    // Link model to boss object
-    boss.model.userData.enemyObject = boss;
-    boss.model.name = 'GiantDemon_BOSS';
-
-    // Rebuild originalMaterials Map after any cloning
-    boss.model.userData.originalMaterials = new Map();
-    boss.model.traverse((child) => {
-      if (child.isMesh && child.material) {
-        boss.model.userData.originalMaterials.set(child, child.material);
-      }
-    });
-
-    // Set model position
-    boss.model.position.copy(boss.position);
-    boss.model.position.y = 0;
-
-    // Add to scene
-    this.scene.add(boss.model);
-
-    // Add to enemies array
-    this.enemies.push(boss);
-    this.boss = boss;
-    this.bossActive = true;
-
-    console.log("Boss spawned at", boss.position);
-  }
-
-  // Handle boss death
-  handleBossDeath(boss) {
-    if (boss.state === 'dying') return;
-
-    console.log("BOSS DEFEATED!");
-    boss.state = 'dying';
-
-    // Play boss death sound
-    if (this.weaponSystem && this.weaponSystem.playEnemyDeathSound) {
-      // Play multiple death sounds for dramatic effect
-      this.weaponSystem.playEnemyDeathSound();
-      setTimeout(() => this.weaponSystem.playEnemyDeathSound(), 200);
-      setTimeout(() => this.weaponSystem.playEnemyDeathSound(), 400);
-    }
-
-    // Dramatic death animation
-    const deathDuration = 2.0;
-    const startTime = performance.now();
-    const initialScale = boss.model.scale.clone();
-
-    const fadeInterval = setInterval(() => {
-      const elapsed = (performance.now() - startTime) / 1000;
-      if (elapsed >= deathDuration) {
-        clearInterval(fadeInterval);
-        if (this.scene.getObjectById(boss.model.id)) {
-          this.scene.remove(boss.model);
-          boss.model.traverse(child => {
-            if (child.isMesh) {
-              if (child.geometry) child.geometry.dispose();
-              if (child.material) {
-                if (Array.isArray(child.material)) {
-                  child.material.forEach(mat => mat.dispose());
-                } else {
-                  child.material.dispose();
-                }
-              }
-            }
-          });
-        }
-      } else {
-        const progress = elapsed / deathDuration;
-        // Shrink and spin
-        boss.model.scale.copy(initialScale).multiplyScalar(1 - progress);
-        boss.model.rotation.y += 0.1;
-        boss.model.position.y = progress * 2; // Rise up slightly
-      }
-    }, 30);
-
-    // Remove from enemies array
-    this.enemies = this.enemies.filter(e => e.id !== boss.id);
-    this.boss = null;
-    this.bossActive = false;
-
-    // Notify level manager
-    if (this.levelManager && this.levelManager.onBossDefeated) {
-      setTimeout(() => {
-        this.levelManager.onBossDefeated();
-      }, 500);
-    }
-
-    // Update score
-    window.updateGameScore(100); // Boss worth more points
-  }
-
-  // Boss animation update
-  updateBossAnimation(enemy, deltaTime) {
-    const state = enemy.model.userData.animationState;
-    const body = enemy.model.children[0];
-    const leftArm = enemy.model.children[4];
-    const rightArm = enemy.model.children[5];
-
-    if (enemy.state === 'dying' || state.isAttacking) return;
-
-    if (enemy.state === 'chasing') {
-      state.walkTime += deltaTime * enemy.speed * 0.8;
-      // Heavy stomping motion
-      body.position.y = 6 + Math.abs(Math.sin(state.walkTime)) * 0.5;
-      if (leftArm) leftArm.rotation.x = Math.sin(state.walkTime) * 0.3;
-      if (rightArm) rightArm.rotation.x = -Math.sin(state.walkTime) * 0.3;
-    } else if (enemy.state === 'attacking') {
-      state.attackTime += deltaTime * 2;
-      // Menacing arm raise
-      if (leftArm) leftArm.rotation.z = Math.PI / 4 + Math.sin(state.attackTime) * 0.3;
-      if (rightArm) rightArm.rotation.z = -Math.PI / 4 - Math.sin(state.attackTime) * 0.3;
-    } else {
-      // Idle breathing
-      body.position.y = 6 + Math.sin(state.walkTime * 0.5) * 0.2;
-      state.walkTime += deltaTime;
-    }
-  }
-
-  // --- Setup and Pathfinding (Basic) ---
-
-  setupSpawnPoints() {
-    const spawnLocations = [
-      { x: -40, z: -20 }, { x: 40, z: -20 }, { x: -40, z: -60 },
-      { x: 40, z: -60 }, { x: -20, z: -80 }, { x: 20, z: -80 },
-      { x: -60, z: -40 }, { x: 60, z: -40 }, { x: 0, z: -100 },
-      { x: -80, z: -80 }, { x: 80, z: -80 } // Added more points
-    ];
-
-    this.spawnPoints = []; // Clear existing points before setting up
-    spawnLocations.forEach(loc => {
-      // TODO: Add validation check against collisionSystem to ensure point is not inside wall
-      this.spawnPoints.push(new THREE.Vector3(loc.x, 0, loc.z)); // Assume ground is at y=0
-    });
-    console.log(`Set up ${this.spawnPoints.length} spawn points.`);
-  }
-
-  // --- Pathfinding (Simplified - Direct line, no grid used) ---
-  findPath(start, target) {
-    // Placeholder: Returns a direct path. Replace with A* or other algorithm.
-    // Ensure the target Y is same as start Y for ground movement
-    const targetGroundPos = new THREE.Vector3(target.x, start.y, target.z);
-    return [start.clone(), targetGroundPos]; // Path is just start and end points
-  }
-
-  // --- Spawning ---
-
-  spawnEnemy() {
-    if (this.enemies.length >= this.maxEnemies || !this.player || this.spawnPoints.length === 0) {
-      return; // Max enemies reached, player doesn't exist, or no spawn points defined
-    }
-
-    // Choose a random spawn point far from the player
-    let spawnPoint = null;
-    let attempts = 0;
-    const minSpawnDist = 30; // Minimum distance from player to spawn
-    const playerPos = this.player.getPosition(); // Use getter if available
-
-    while (attempts < 10) {
-        const potentialPoint = this.spawnPoints[Math.floor(Math.random() * this.spawnPoints.length)];
-        if (playerPos.distanceTo(potentialPoint) >= minSpawnDist) {
-            spawnPoint = potentialPoint;
-            break;
-        }
-        attempts++;
-    }
-    if (!spawnPoint) {
-        // Fallback if no suitable point found after attempts
-        spawnPoint = this.spawnPoints[Math.floor(Math.random() * this.spawnPoints.length)];
-        // console.warn("Could not find spawn point far enough from player, using random.");
-    }
-
-
-    // Choose enemy type based on weights
-    const totalWeight = this.enemyTypes.reduce((sum, type) => sum + type.spawnWeight, 0);
-    let randomWeight = Math.random() * totalWeight;
-    let selectedType = this.enemyTypes[0]; // Default
-    for (const type of this.enemyTypes) {
-      randomWeight -= type.spawnWeight;
-      if (randomWeight <= 0) {
-        selectedType = type;
-        break;
-      }
-    }
-
-    // Create the enemy object
-    const enemy = {
-      id: THREE.MathUtils.generateUUID(), // Unique ID
-      type: selectedType.name,
-      health: selectedType.health * (1 + (this.difficultyLevel - 1) * 0.2),
-      maxHealth: selectedType.health * (1 + (this.difficultyLevel - 1) * 0.2),
-      damage: selectedType.damage * (1 + (this.difficultyLevel - 1) * 0.1),
-      speed: selectedType.speed,
-      attackRange: selectedType.attackRange,
-      attackRate: selectedType.attackRate,
-      lastAttackTime: 0,
-      model: selectedType.model.clone(), // Clone the template model
-      position: spawnPoint.clone(), // Start at spawn point
-      target: playerPos.clone(), // Initial target is player's current position
-      path: [],
-      currentPathIndex: 0,
-      state: 'idle', // idle, chasing, attacking, dying
-      lastStateChange: performance.now() / 1000,
-      height: selectedType.height, // Store height
-      animationUpdate: selectedType.animationUpdate, // Reference to the animation function
-      hitFlashTimeout: null, // Timeout ID for hit flash reset
-      enemySystem: this, // Reference back to the system for calling methods like handleEnemyDeath
-
-      // --- Enemy Methods ---
-      takeDamage: function(amount) { // Removed enemySystem parameter, use this.enemySystem
-          if (this.state === 'dying') return; // Already dying
-
-          this.health -= amount;
-          console.log(`${this.type} ${this.id.substring(0,4)} took ${amount} damage, ${this.health.toFixed(0)}/${this.maxHealth.toFixed(0)} left.`);
-
-          // --- Hit Flash Effect ---
-          if (this.hitFlashTimeout) clearTimeout(this.hitFlashTimeout); // Clear previous timeout
-          const hitMaterial = new THREE.MeshStandardMaterial({
-              color: 0xFFFFFF, // White flash
-              emissive: 0xFFFFFF,
-              emissiveIntensity: 0.8, // Intense flash
-              roughness: 1.0,
-              metalness: 0.0,
-              transparent: true,
-              opacity: 0.8
-          });
-
-          this.model.traverse((child) => {
-              if (child.isMesh && child.material) {
-                  child.material = hitMaterial;
-              }
-          });
-
-          this.hitFlashTimeout = setTimeout(() => {
-              this.model.traverse((child) => {
-                  if (child.isMesh && this.model.userData.originalMaterials) {
-                      const originalMaterial = this.model.userData.originalMaterials.get(child);
-                      if (originalMaterial) {
-                          child.material = originalMaterial;
-                      }
-                  }
-              });
-              this.hitFlashTimeout = null; // Clear timeout ID
-          }, 100); // Shorter flash duration (ms)
-          // --- End Hit Flash ---
-
-          if (this.health <= 0) {
-              this.enemySystem.handleEnemyDeath(this); // Use stored reference
-          }
-      },
-    };
-
-    // Link the model back to the enemy object for raycasting checks
-    enemy.model.userData.enemyObject = enemy;
-    // Add a name for easier debugging in scene graph
-    enemy.model.name = `${enemy.type}_${enemy.id.substring(0,4)}`;
-
-    // Rebuild originalMaterials Map after cloning (Maps don't clone properly)
-    enemy.model.userData.originalMaterials = new Map();
-    enemy.model.traverse((child) => {
-        if (child.isMesh && child.material) {
-            enemy.model.userData.originalMaterials.set(child, child.material);
-        }
-    });
-
-    // Set model initial position and add to scene
-    enemy.model.position.copy(enemy.position);
-    // Adjust Y position based on enemy height so feet are near y=0
-    enemy.model.position.y = 0; // Assume model origin is at feet, adjust if needed
-    this.scene.add(enemy.model);
-
-    // Add to collision system if it's used for dynamic enemy collisions
-    // this.collisionSystem.add(enemy.model); // Be careful adding complex groups directly
-
-    // Add to our list
-    this.enemies.push(enemy);
-    this.lastSpawnTime = performance.now() / 1000; // Update last spawn time
-
-    // console.log(`Spawned ${enemy.type} at ${spawnPoint.x.toFixed(1)}, ${spawnPoint.z.toFixed(1)}.`);
-  }
-
-  // --- Death Handling ---
-  handleEnemyDeath(enemy) {
-      if (enemy.state === 'dying') return; // Already processing death
-
-      console.log(`${enemy.type} ${enemy.id.substring(0,4)} died.`);
-      enemy.state = 'dying';
-      this.killCount++;
-      window.updateGameScore(10); // Example: Update score via global function
-
-      // Play enemy death sound
-      if (this.weaponSystem && this.weaponSystem.playEnemyDeathSound) {
-          this.weaponSystem.playEnemyDeathSound();
-      }
-
-      // Optional: Add death animation/effect trigger here
-      // e.g., enemy.model.playAnimation('death');
-
-      // Remove from collision system if added
-      // this.collisionSystem.remove(enemy.model);
-
-      // Remove model from scene after a delay (e.g., for death animation/fade out)
-      // Add a simple shrink/fade effect
-      const deathDuration = 0.5; // seconds
-      const startTime = performance.now();
-      const initialScale = enemy.model.scale.clone();
-
-      const fadeInterval = setInterval(() => {
-          const elapsed = (performance.now() - startTime) / 1000;
-          if (elapsed >= deathDuration) {
-              clearInterval(fadeInterval);
-              if(this.scene.getObjectById(enemy.model.id)) { // Check if still in scene
-                  this.scene.remove(enemy.model);
-                  // Dispose geometries/materials
-                  enemy.model.traverse(child => {
-                      if (child.isMesh) {
-                          child.geometry.dispose();
-                          if (Array.isArray(child.material)) {
-                              child.material.forEach(mat => mat.dispose());
-                          } else if (child.material) {
-                              child.material.dispose();
-                          }
-                      }
-                  });
-              }
-          } else {
-              const progress = elapsed / deathDuration;
-              enemy.model.scale.copy(initialScale).multiplyScalar(1 - progress); // Shrink
-              // Optional: Fade out material opacity if materials support transparency
-          }
-      }, 30); // Update interval
-
-
-      // Remove enemy object from the list immediately
-      this.enemies = this.enemies.filter(e => e.id !== enemy.id);
-
-      // Potentially increase difficulty or trigger events based on kill count
-      // if (this.killCount % 10 === 0) { this.difficultyLevel++; console.log("Difficulty Increased!"); }
-  }
-
-  // --- Enemy Attack ---
-  performAttack(enemy) {
-    const currentTime = performance.now() / 1000;
-    // Use attack rate correctly (time between attacks = 1 / rate)
-    if (currentTime - enemy.lastAttackTime > (1 / enemy.attackRate)) {
-      console.log(`${enemy.type} ${enemy.id.substring(0,4)} attacks player!`);
-      // Use the HealthSystem to damage the player
-      this.healthSystem.takeDamage(enemy.damage); // Correct method name from health.js
-      enemy.lastAttackTime = currentTime;
-      enemy.model.userData.animationState.isAttacking = true; // Trigger attack animation state
-      enemy.model.userData.animationState.attackTime = 0; // Reset attack animation timer
-
-       // Simple attack animation effect (e.g., quick lunge or arm swing)
-       // This part depends heavily on the specific model and animation setup
-       // Lunge example:
-        const attackDirection = new THREE.Vector3();
-        enemy.model.getWorldDirection(attackDirection); // Direction enemy is facing
-        attackDirection.multiplyScalar(0.5); // Lunge distance
-        const originalPos = enemy.position.clone(); // Store logical position
-
-        // Apply temporary offset to model for visual effect
-        enemy.model.position.add(attackDirection);
-
-        setTimeout(() => {
-            // Reset model position after lunge - use stored logical position
-            if(enemy.state !== 'dying') { // Check if enemy died during the attack :)
-               enemy.model.position.copy(enemy.position);
-            }
-            if(enemy.model.userData.animationState) enemy.model.userData.animationState.isAttacking = false;
-        }, 150); // Duration of lunge/attack visual effect
-    }
-  }
-
-  // --- Animation Updates ---
-  // Methods updateRakshasaAnimation, updateAsuraAnimation, updateNagaAnimation remain here...
   updateRakshasaAnimation(enemy, deltaTime) {
     const state = enemy.model.userData.animationState;
     const body = enemy.model.children[0]; // Assuming body is the first child
@@ -1022,7 +706,7 @@ export class EnemySystem {
 
     updateNagaAnimation(enemy, deltaTime) {
         const state = enemy.model.userData.animationState;
-        const segments = 8; // Must match creation
+        const segments = 8; // Number of tail sections
 
          if (enemy.state === 'dying' || state.isAttacking) return;
 
@@ -1057,219 +741,4 @@ export class EnemySystem {
     }
 
 
-  // --- Main Update Loop ---
-
-  update(deltaTime) {
-    const currentTime = performance.now() / 1000;
-
-    // --- Spawning Logic ---
-    if (currentTime - this.lastSpawnTime > this.spawnInterval && this.enemies.length < this.maxEnemies) {
-      this.spawnEnemy();
-    }
-
-    // --- Update Existing Enemies ---
-    // Iterate backwards for safe removal during loop
-    for (let i = this.enemies.length - 1; i >= 0; i--) {
-      const enemy = this.enemies[i];
-
-      // Skip dead enemies that might still be fading out
-      if (enemy.state === 'dying') {
-        continue;
-      }
-
-      const playerPosition = this.player.getPosition(); // Use getter
-      const distanceToPlayer = enemy.position.distanceTo(playerPosition);
-
-      // --- State Machine ---
-      const previousState = enemy.state;
-      if (distanceToPlayer <= enemy.attackRange) {
-        enemy.state = 'attacking';
-      } else if (distanceToPlayer <= this.chaseThreshold) {
-        enemy.state = 'chasing';
-      } else if (distanceToPlayer > this.idleThreshold) {
-         if(enemy.state === 'chasing') enemy.state = 'idle';
-         else if(enemy.state === 'attacking') enemy.state = 'chasing'; // Move from attack to chase if player backs off
-      }
-      else if (enemy.state === 'attacking') { // Player moved between attack and chase range
-           enemy.state = 'chasing';
-      }
-
-
-      if (enemy.state !== previousState) {
-        // console.log(`${enemy.type} ${enemy.id.substring(0,4)} state changed to ${enemy.state}`);
-        enemy.lastStateChange = currentTime;
-        enemy.path = []; // Reset path on state change
-        enemy.currentPathIndex = 0;
-      }
-
-      // --- Actions based on State ---
-      // Target for looking should include Y for better aiming up/down slightly
-      const lookTarget = playerPosition.clone();
-      // Adjust lookTarget Y slightly towards player's eye level? Optional.
-      // lookTarget.y = Math.max(enemy.position.y, playerPosition.y * 0.8); // Prevent looking straight down/up
-
-
-      switch (enemy.state) {
-        case 'idle':
-          // Stand still, look towards player
-          enemy.model.lookAt(lookTarget);
-          break;
-
-        case 'chasing':
-          // Simple direct movement towards player (replace with path following)
-          const direction = new THREE.Vector3().subVectors(playerPosition, enemy.position);
-          direction.y = 0; // Move only on XZ plane for now
-          direction.normalize();
-
-          // --- Basic Collision Avoidance (Check if next step is valid) ---
-          // This requires integration with your collision system (e.g., check a small step forward)
-          let moveSpeed = enemy.speed * deltaTime;
-          const nextPos = enemy.position.clone().add(direction.clone().multiplyScalar(moveSpeed));
-
-          // Example check (needs a proper method in CollisionSystem):
-          // if (this.collisionSystem.isPositionOccupied(nextPos, enemy.radius)) {
-          //     moveSpeed = 0; // Stop if next step is blocked
-          //     // TODO: Add better avoidance logic (e.g., try strafing)
-          // }
-
-          enemy.position.add(direction.multiplyScalar(moveSpeed));
-
-          // Update model position and orientation
-          enemy.model.position.copy(enemy.position);
-          enemy.model.lookAt(lookTarget);
-          break;
-
-        case 'attacking':
-          // Stop moving, face player, and attack
-          enemy.model.lookAt(lookTarget);
-          // Ensure model position matches logical position before attack lunge
-          enemy.model.position.copy(enemy.position);
-          this.performAttack(enemy);
-          break;
-      }
-
-      // --- Update Animations ---
-      if (enemy.animationUpdate) {
-          enemy.animationUpdate(enemy, deltaTime);
-      }
-
-    } // End loop through enemies
-  } // End update method
-
-
-  // --- NEW RESET METHOD ---
-  reset() {
-      console.log("Resetting Enemy System...");
-
-      // Remove all existing enemy models from the scene and dispose resources
-      this.enemies.forEach(enemy => {
-          if (enemy.model && this.scene.getObjectById(enemy.model.id)) { // Check if model exists and is in scene
-              this.scene.remove(enemy.model);
-              // Dispose geometry and materials
-              enemy.model.traverse(child => {
-                  if (child.isMesh) {
-                      if (child.geometry) child.geometry.dispose();
-                      if (child.material) {
-                           if (Array.isArray(child.material)) {
-                               child.material.forEach(mat => mat.dispose());
-                           } else {
-                               child.material.dispose();
-                           }
-                      }
-                  }
-              });
-          }
-          // Clear any pending timeouts (like hit flash)
-          if (enemy.hitFlashTimeout) {
-              clearTimeout(enemy.hitFlashTimeout);
-          }
-      });
-
-      // Clear the enemies array
-      this.enemies = [];
-
-      // Reset counters and timers
-      this.killCount = 0;
-      this.lastSpawnTime = 0; // Allow immediate spawning after reset based on interval
-      this.difficultyLevel = 1; // Reset difficulty? Or keep it? Resetting for now.
-
-      console.log("Enemy System Reset. Enemies cleared.");
-
-      // Optional: Spawn initial enemies immediately after reset?
-      // this.spawnEnemy(); // Example: Spawn one enemy right away
-      // Or let the update loop handle spawning based on the reset timer.
-  }
-
-  // --- Helper methods for WeaponSystem ---
-
-  // Returns an array of meshes used for enemy hit detection
-  getEnemyHitboxes() {
-      const hitboxes = [];
-      this.enemies.forEach(enemy => {
-          if (enemy.state !== 'dying' && enemy.model) {
-              // Add the main model group or specific hitbox meshes if defined
-              // For simplicity, adding the whole model group allows hits on any part
-              // For more precision, add specific body parts (head, torso) marked with userData
-              enemy.model.traverse(child => {
-                  if (child.isMesh && child.userData.isEnemyPart) { // Check for the flag set during model creation
-                      hitboxes.push(child);
-                  }
-              });
-              // If no parts are marked, add the main model group (less precise)
-              // if (hitboxes.length === 0) hitboxes.push(enemy.model);
-          }
-      });
-      return hitboxes;
-  }
-
-  // Finds the enemy object associated with a given hitbox mesh
-  getEnemyByHitbox(hitboxMesh) {
-      // Traverse up the hierarchy from the hit mesh to find the main enemy model group,
-      // then retrieve the enemy object stored in its userData.
-      let parent = hitboxMesh;
-      while (parent && !parent.userData.enemyObject) {
-          parent = parent.parent;
-      }
-      return parent ? parent.userData.enemyObject : null;
-  }
-
-  // Method for systems to manually update UI if needed (e.g. on resize)
-  // Not typically needed for EnemySystem unless it manages specific UI elements.
-  // onResize() {
-  //     console.log("EnemySystem received resize event.");
-  // }
-
-  // --- Clear All Enemies Method (called when quitting to menu) ---
-  clearAllEnemies() {
-      console.log("Clearing all enemies...");
-
-      // Remove all existing enemy models from the scene and dispose resources
-      this.enemies.forEach(enemy => {
-          if (enemy.model && this.scene.getObjectById(enemy.model.id)) {
-              this.scene.remove(enemy.model);
-              // Dispose geometry and materials
-              enemy.model.traverse(child => {
-                  if (child.isMesh) {
-                      if (child.geometry) child.geometry.dispose();
-                      if (child.material) {
-                          if (Array.isArray(child.material)) {
-                              child.material.forEach(mat => mat.dispose());
-                          } else {
-                              child.material.dispose();
-                          }
-                      }
-                  }
-              });
-          }
-          // Clear any pending timeouts (like hit flash)
-          if (enemy.hitFlashTimeout) {
-              clearTimeout(enemy.hitFlashTimeout);
-          }
-      });
-
-      // Clear the enemies array
-      this.enemies = [];
-      console.log("All enemies cleared.");
-  }
-
-} // End EnemySystem class
+}

@@ -1,10 +1,10 @@
 {
   "name": "fps-game",
   "version": "1.0.0",
-  "description": "A browser-based 3D FPS game inspired by DOOM but set in India",
+  "description": "Monsoon Gate, a browser-based retro FPS set in three India-inspired courtyards",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test",
     "start": "webpack serve --open",
     "build": "webpack --mode=production"
   },
@@ -28,5 +28,6 @@
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4",
     "webpack-dev-server": "^4.15.2"
-  }
+  },
+  "type": "module"
 }
